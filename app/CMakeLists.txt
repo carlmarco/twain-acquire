@@ -11,5 +11,6 @@ add_executable(twain_acquire WIN32
   MainWindow.hpp ImageView.hpp MountView.hpp Dialogs.hpp)
 set_target_properties(twain_acquire PROPERTIES OUTPUT_NAME twain-acquire)
 target_link_libraries(twain_acquire PRIVATE ta_appcore Qt6::Widgets)
+target_compile_definitions(twain_acquire PRIVATE TA_VERSION="${TA_VERSION}")
 # The application finds its helpers next to itself.
 add_dependencies(twain_acquire ta_helper)

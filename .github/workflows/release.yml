@@ -1,0 +1,153 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-2022
+    env:
+      QT_VERSION: "6.8.3"
+      TWAIN_H_URL: https://raw.githubusercontent.com/twain/twain-dsm/v2.5.1/TWAIN_DSM/src/twain.h
+      TWAIN_H_SHA256: dcae88f5212b8e625724f84dbc738386043dfeb4275db13edf659cd94704db6b
+      DSM_ZIP_URL: https://github.com/twain/twain-dsm/releases/download/v2.5.1/dsm_020501.zip
+      DSM_ZIP_SHA256: 6d5b520e0d4d524a195aa6ed749edb09d7118eed96c7defb4952bfcdb1590cee
+      DSM_LICENSE_URL: https://raw.githubusercontent.com/twain/twain-dsm/v2.5.1/TWAIN_DSM/license.txt
+      VC_REDIST_URL: https://aka.ms/vs/17/release/vc_redist.x64.exe
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Version
+        run: |
+          $project = (Select-String -Path CMakeLists.txt -Pattern 'project\(twain-acquire VERSION ([0-9.]+)').Matches[0].Groups[1].Value
+          if ($env:GITHUB_REF_TYPE -eq 'tag') {
+            $version = $env:GITHUB_REF_NAME.TrimStart('v')
+            if ($version -ne $project) { throw "tag $env:GITHUB_REF_NAME does not match project version $project" }
+          } else {
+            $version = "$project-dev.$env:GITHUB_RUN_NUMBER"
+          }
+          "VERSION=$version" >> $env:GITHUB_ENV
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          arch: win64_msvc2022_64
+          cache: true
+
+      - name: Fetch TWAIN header, DSM and runtime
+        run: |
+          New-Item -ItemType Directory -Force deps/twain | Out-Null
+          function Get-Pinned($url, $out, $sha) {
+            Invoke-WebRequest -Uri $url -OutFile $out
+            $h = (Get-FileHash $out -Algorithm SHA256).Hash.ToLower()
+            if ($h -ne $sha) { throw "${out}: SHA-256 $h, expected $sha" }
+          }
+          Get-Pinned $env:TWAIN_H_URL deps/twain/twain.h $env:TWAIN_H_SHA256
+          Get-Pinned $env:DSM_ZIP_URL deps/dsm.zip $env:DSM_ZIP_SHA256
+          Expand-Archive deps/dsm.zip -DestinationPath deps/dsm
+          Invoke-WebRequest -Uri $env:DSM_LICENSE_URL -OutFile deps/twain-dsm-license.txt
+          foreach ($dll in 'deps/dsm/dsm_020501/windows/32/TWAINDSM.dll', 'deps/dsm/dsm_020501/windows/64/TWAINDSM.dll') {
+            $sig = Get-AuthenticodeSignature $dll
+            if ($sig.Status -ne 'Valid') { throw "${dll}: signature $($sig.Status)" }
+          }
+          # The runtime installer changes with Microsoft's updates, so check its signature instead of a hash.
+          Invoke-WebRequest -Uri $env:VC_REDIST_URL -OutFile deps/vc_redist.x64.exe
+          $sig = Get-AuthenticodeSignature deps/vc_redist.x64.exe
+          if ($sig.Status -ne 'Valid' -or $sig.SignerCertificate.Subject -notmatch 'O=Microsoft Corporation') {
+            throw "vc_redist.x64.exe: signature $($sig.Status) by $($sig.SignerCertificate.Subject)"
+          }
+
+      - name: Build 64-bit application and helper
+        run: |
+          cmake -S . -B build64 -A x64 -DCMAKE_PREFIX_PATH="$env:QT_ROOT_DIR" -DTWAIN_INCLUDE_DIR="$PWD/deps/twain" -DTA_VERSION="$env:VERSION"
+          cmake --build build64 --config Release --parallel
+
+      - name: Build 32-bit helper
+        run: |
+          cmake -S . -B build32 -A Win32 -DTA_HELPER_ONLY=ON -DTWAIN_INCLUDE_DIR="$PWD/deps/twain"
+          cmake --build build32 --config Release --parallel
+
+      - name: Test
+        run: ctest --test-dir build64 -C Release --output-on-failure
+
+      - name: Stage
+        run: |
+          New-Item -ItemType Directory -Force stage/app, stage/dsm/32, stage/dsm/64 | Out-Null
+          Copy-Item build64/bin/Release/twain-acquire.exe, build64/bin/Release/ta-helper64.exe stage/app/
+          Copy-Item build32/bin/Release/ta-helper32.exe stage/app/
+          & "$env:QT_ROOT_DIR/bin/windeployqt.exe" --release --no-translations --no-opengl-sw --no-system-d3d-compiler --no-compiler-runtime stage/app/twain-acquire.exe
+          if ($LASTEXITCODE -ne 0) { throw "windeployqt failed" }
+          Copy-Item deps/dsm/dsm_020501/windows/32/TWAINDSM.dll stage/dsm/32/
+          Copy-Item deps/dsm/dsm_020501/windows/64/TWAINDSM.dll stage/dsm/64/
+          Copy-Item deps/vc_redist.x64.exe stage/
+          Copy-Item LICENSE stage/LICENSE.txt
+
+          Invoke-WebRequest -Uri https://www.gnu.org/licenses/lgpl-3.0.txt -OutFile deps/lgpl-3.0.txt
+          Invoke-WebRequest -Uri https://www.gnu.org/licenses/gpl-3.0.txt -OutFile deps/gpl-3.0.txt
+          $notices = @"
+          twain-acquire $env:VERSION includes the following third-party software.
+
+          Qt $env:QT_VERSION
+            Licensed under the GNU Lesser General Public License version 3 (LGPL-3.0),
+            used unmodified as shared libraries. Source: https://download.qt.io/official_releases/qt/
+            The Qt libraries in this folder may be replaced with compatible builds.
+
+          TWAIN Data Source Manager 2.5.1 (TWAINDSM.dll), installed only where none is present
+            Copyright TWAIN Working Group. Licensed under the GNU Lesser General Public
+            License version 2.1 (LGPL-2.1), used unmodified.
+            Source: https://github.com/twain/twain-dsm/tree/v2.5.1
+
+          Microsoft Visual C++ Redistributable
+            Distributed under the Microsoft Software License Terms shown by its installer.
+
+          The full license texts follow.
+          "@
+          $parts = @(
+            $notices,
+            "`n==== GNU Lesser General Public License version 3 ====`n", (Get-Content -Raw deps/lgpl-3.0.txt),
+            "`n==== GNU General Public License version 3 (incorporated by LGPL-3.0) ====`n", (Get-Content -Raw deps/gpl-3.0.txt),
+            "`n==== TWAIN Data Source Manager license (LGPL-2.1) ====`n", (Get-Content -Raw deps/twain-dsm-license.txt)
+          )
+          ($parts -join "`n") | Set-Content -Encoding utf8 stage/THIRD_PARTY_NOTICES.txt
+
+      - name: Build installer
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            choco install innosetup --no-progress -y
+            if ($LASTEXITCODE -ne 0) { throw "installing Inno Setup failed" }
+          }
+          & $iscc "/DAppVersion=$env:VERSION" "/DStageDir=$PWD\stage" installer\twain-acquire.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed" }
+          Get-FileHash installer/output/*.exe -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLower())  $(Split-Path -Leaf $_.Path)" } | Set-Content installer/output/SHA256SUMS.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: twain-acquire-${{ env.VERSION }}-windows
+          path: installer/output/
+
+      - name: Publish release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $notes = @"
+          Windows 10 or later, 64-bit.
+
+          - twain-acquire-$env:VERSION-setup.exe: installs the application with 32- and 64-bit TWAIN helpers.
+            It installs the TWAIN Data Source Manager 2.5.1 only where none is present.
+          - SHA256SUMS.txt: checksum of the installer.
+
+          The installer is not code-signed, so Windows SmartScreen will warn before running it.
+          "@
+          gh release create $env:GITHUB_REF_NAME installer/output/*.exe installer/output/SHA256SUMS.txt --title "twain-acquire $env:VERSION" --notes $notes

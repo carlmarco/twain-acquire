@@ -10,6 +10,14 @@ option(TA_BUILD_TESTS "Build the tests" ON)
 option(TA_HELPER_ONLY "Build only the acquisition helper (use for the 32-bit helper)" OFF)
 set(TWAIN_INCLUDE_DIR "" CACHE PATH "Directory containing twain.h (Windows TWAIN helper)")
 
+set(TA_VERSION "${PROJECT_VERSION}" CACHE STRING "Version shown by the application")
+
+# A helper-only build (the 32-bit helper) carries its C runtime inside, so it
+# needs no separate runtime installed for its bitness.
+if(TA_HELPER_ONLY)
+  set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
+
 # The application and its helpers share one output folder.
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 

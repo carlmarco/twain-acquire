@@ -12,7 +12,7 @@ int main(int argc, char** argv) {
   QApplication app(argc, argv);
   QApplication::setOrganizationName("twain-acquire");
   QApplication::setApplicationName("twain-acquire");
-  QApplication::setApplicationVersion("0.1.0");
+  QApplication::setApplicationVersion(TA_VERSION);
   registerAppTypes();
 
   QCommandLineParser cli;
