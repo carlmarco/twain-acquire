@@ -31,7 +31,7 @@ HelperClient::~HelperClient() {
   }
 }
 
-bool HelperClient::start(const QString& program, const QString& backend) {
+bool HelperClient::start(const QString& program, const QString& backend, const QStringList& extraArgs) {
   if (isRunning()) return true;
   program_ = program;
   backend_ = backend;
@@ -39,7 +39,7 @@ bool HelperClient::start(const QString& program, const QString& backend) {
   buffer_.clear();
   expectingExit_ = false;
   dead_ = false;
-  proc_.start(program, {"--backend", backend});
+  proc_.start(program, QStringList{"--backend", backend} + extraArgs);
   return true;
 }
 

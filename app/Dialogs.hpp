@@ -60,6 +60,7 @@ struct AppOptions {
   bool simulatedSources = false;
   bool requirePatientId = true;
   bool disarmWhenFull = true;
+  QString dsmPath;  // empty = the system TWAINDSM.dll
 };
 
 class OptionsDialog : public QDialog {
@@ -70,4 +71,5 @@ class OptionsDialog : public QDialog {
 
  private:
   QCheckBox *sim_, *requireId_, *disarmFull_;
+  QLineEdit* dsmPath_;
 };

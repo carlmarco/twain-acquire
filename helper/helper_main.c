@@ -178,6 +178,7 @@ static int claim_stdout(void) {
 
 int main(int argc, char **argv) {
   const char *backend = "sim";
+  const char *dsm_path = NULL;
   char hello[256];
   size_t len = 0;
   char bits[8];
@@ -186,12 +187,21 @@ int main(int argc, char **argv) {
 
   for (i = 1; i < argc; ++i) {
     if (!strcmp(argv[i], "--backend") && i + 1 < argc) backend = argv[++i];
+    else if (!strcmp(argv[i], "--dsm") && i + 1 < argc) dsm_path = argv[++i];
   }
   if (!claim_stdout()) return 2;
+#ifdef _WIN32
+  /* A DLL that fails to load must return an error, not raise a system dialog
+     that nobody sees in a hidden helper and that blocks it until it is killed. */
+  SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOOPENFILEERRORBOX);
+#endif
 
   if (!strcmp(backend, "sim")) b = ta_sim_backend();
 #ifdef TA_HAVE_TWAIN
-  else if (!strcmp(backend, "twain")) b = ta_twain_backend();
+  else if (!strcmp(backend, "twain")) b = ta_twain_backend(dsm_path);
+#endif
+#ifndef TA_HAVE_TWAIN
+  (void)dsm_path;
 #endif
   if (!b) {
     ta_send_error("backend", "this helper was built without the requested backend", 1);

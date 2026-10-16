@@ -27,7 +27,7 @@ class HelperClient : public QObject {
   explicit HelperClient(QObject* parent = nullptr);
   ~HelperClient() override;
 
-  bool start(const QString& program, const QString& backend);
+  bool start(const QString& program, const QString& backend, const QStringList& extraArgs = {});
   bool isRunning() const;
   QString program() const { return program_; }
   QString backend() const { return backend_; }

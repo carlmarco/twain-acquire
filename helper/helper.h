@@ -61,7 +61,8 @@ void ta_opt_str(const char *kv, size_t n, const char *key, char *out, size_t cap
 
 ta_backend *ta_sim_backend(void);
 #ifdef TA_HAVE_TWAIN
-ta_backend *ta_twain_backend(void);
+/* dsm_path: UTF-8 full path of TWAINDSM.dll to use, or NULL/empty for the system one. */
+ta_backend *ta_twain_backend(const char *dsm_path);
 #endif
 
 /* Request dispatch, shared by the platform loops. Returns 0 to stop. */

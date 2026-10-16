@@ -3,6 +3,7 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDialogButtonBox>
+#include <QDir>
 #include <QDoubleSpinBox>
 #include <QFileDialog>
 #include <QFormLayout>
@@ -305,6 +306,19 @@ OptionsDialog::OptionsDialog(const AppOptions& o, const QString& dataDir, QWidge
   v->addWidget(sim_);
   v->addWidget(requireId_);
   v->addWidget(disarmFull_);
+  dsmPath_ = new QLineEdit(o.dsmPath);
+  dsmPath_->setPlaceholderText(tr("System TWAINDSM.dll"));
+  auto* dsmBrowse = new QPushButton(tr("Browse…"));
+  connect(dsmBrowse, &QPushButton::clicked, this, [this] {
+    const QString f = QFileDialog::getOpenFileName(this, tr("TWAIN Data Source Manager"), dsmPath_->text(),
+                                                   tr("TWAINDSM.dll (TWAINDSM.dll);;DLL files (*.dll)"));
+    if (!f.isEmpty()) dsmPath_->setText(QDir::toNativeSeparators(f));
+  });
+  auto* dsmRow = new QHBoxLayout;
+  dsmRow->addWidget(new QLabel(tr("TWAIN DSM")));
+  dsmRow->addWidget(dsmPath_, 1);
+  dsmRow->addWidget(dsmBrowse);
+  v->addLayout(dsmRow);
   auto* where = new QLabel(tr("Data folder: %1").arg(dataDir));
   where->setTextInteractionFlags(Qt::TextSelectableByMouse);
   where->setWordWrap(true);
@@ -317,5 +331,6 @@ AppOptions OptionsDialog::options() const {
   o.simulatedSources = sim_->isChecked();
   o.requirePatientId = requireId_->isChecked();
   o.disarmWhenFull = disarmFull_->isChecked();
+  o.dsmPath = dsmPath_->text().trimmed();
   return o;
 }

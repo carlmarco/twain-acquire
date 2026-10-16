@@ -105,6 +105,7 @@ void MainWindow::loadConfig() {
   options_.simulatedSources = s.value("simulatedSources", false).toBool() || launch_.simulate;
   options_.requirePatientId = s.value("requirePatientId", true).toBool();
   options_.disarmWhenFull = s.value("disarmWhenFull", true).toBool();
+  options_.dsmPath = s.value("dsmPath").toString();
 
   std::vector<std::string> problems;
   layouts_ = ta::loadLayouts(layoutsDir_, &problems);
@@ -431,8 +432,13 @@ void MainWindow::scanSources() {
       log("warn", tr("Source search: %1").arg(text));
     });
     connect(h, &HelperClient::hello, this, [h] { h->list(kListTimeoutMs); });
-    h->start(programs[i], backends[i]);
+    h->start(programs[i], backends[i], helperArgs(backends[i]));
   }
+}
+
+QStringList MainWindow::helperArgs(const QString& backend) const {
+  if (backend == "twain" && !options_.dsmPath.isEmpty()) return {"--dsm", options_.dsmPath};
+  return {};
 }
 
 const HelperClient::Source* MainWindow::currentSource() const {
@@ -522,7 +528,7 @@ bool MainWindow::ensureHelper() {
   connect(helper_, &HelperClient::logLine, this, [this](const QString& level, const QString& text) { log(level, text); });
   connect(helper_, &HelperClient::died, this, &MainWindow::onHelperDied);
   helperState_ = "closed";
-  helper_->start(program, s->backend);
+  helper_->start(program, s->backend, helperArgs(s->backend));
   return true;
 }
 
@@ -919,12 +925,13 @@ void MainWindow::refreshExportStatus() {
 void MainWindow::editOptions() {
   OptionsDialog d(options_, dataDir_, this);
   if (d.exec() != QDialog::Accepted) return;
-  const bool rescan = d.options().simulatedSources != options_.simulatedSources;
+  const bool rescan = d.options().simulatedSources != options_.simulatedSources || d.options().dsmPath != options_.dsmPath;
   options_ = d.options();
   QSettings s;
   s.setValue("simulatedSources", options_.simulatedSources);
   s.setValue("requirePatientId", options_.requirePatientId);
   s.setValue("disarmWhenFull", options_.disarmWhenFull);
+  s.setValue("dsmPath", options_.dsmPath);
   if (rescan) scanSources();
 }
 

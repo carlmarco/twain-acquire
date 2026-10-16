@@ -38,6 +38,7 @@ typedef struct {
   TW_UINT16 mech;
   int show_ui, modal_ui;
   char temp_file[MAX_PATH];
+  wchar_t dsm_override[MAX_PATH]; /* from --dsm; empty = system DSM */
   uint32_t index;
 } twain;
 
@@ -144,22 +145,101 @@ static TW_UINT16 FAR PASCAL ds_callback(pTW_IDENTITY origin, pTW_IDENTITY dest, 
 
 /* ---- DSM ------------------------------------------------------------------ */
 
+/* What a candidate DSM file is, for the error report: size and PE machine. */
+static void describe_dll(const wchar_t *path, char *out, size_t cap) {
+  HANDLE f = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+  unsigned char hdr[512];
+  DWORD got = 0;
+  LARGE_INTEGER size;
+  const char *machine = "not a Windows DLL";
+  char hex[16];
+  if (f == INVALID_HANDLE_VALUE) {
+    snprintf(out, cap, "cannot be opened");
+    return;
+  }
+  size.QuadPart = 0;
+  GetFileSizeEx(f, &size);
+  ReadFile(f, hdr, sizeof hdr, &got, NULL);
+  CloseHandle(f);
+  if (got >= 0x40 && hdr[0] == 'M' && hdr[1] == 'Z') {
+    DWORD pe = (DWORD)hdr[0x3C] | (DWORD)hdr[0x3D] << 8 | (DWORD)hdr[0x3E] << 16 | (DWORD)hdr[0x3F] << 24;
+    if (pe + 6 <= got && hdr[pe] == 'P' && hdr[pe + 1] == 'E' && hdr[pe + 2] == 0 && hdr[pe + 3] == 0) {
+      unsigned m = (unsigned)hdr[pe + 4] | (unsigned)hdr[pe + 5] << 8;
+      switch (m) {
+        case 0x014C: machine = "32-bit x86"; break;
+        case 0x8664: machine = "64-bit x64"; break;
+        case 0xAA64: machine = "ARM64"; break;
+        case 0x01C4: machine = "ARM32"; break;
+        default:
+          snprintf(hex, sizeof hex, "machine 0x%04X", m);
+          machine = hex;
+      }
+    }
+  }
+  snprintf(out, cap, "%lld bytes, %s", (long long)size.QuadPart, machine);
+}
+
+static void append_utf8(char *buf, size_t cap, const wchar_t *w) {
+  size_t len = strlen(buf);
+  if (len + 1 < cap) WideCharToMultiByte(CP_UTF8, 0, w, -1, buf + len, (int)(cap - len), NULL, NULL);
+}
+
+/*
+ * Load the DSM by full path only: an explicit path from the application, then
+ * the system directory (WOW64 sends a 32-bit helper to SysWOW64), then the
+ * helper's own folder. The bare-name search order is never used, so a stray
+ * or planted TWAINDSM.dll in the current directory or on PATH is not picked up.
+ */
+static int load_dsm(void) {
+  wchar_t candidates[3][MAX_PATH];
+  int n = 0, i, tried = 0;
+  char report[2048];
+  const int helper_bits = (int)(sizeof(void *) * 8);
+  snprintf(report, sizeof report, "TWAINDSM.dll could not be loaded by this %d-bit helper.", helper_bits);
+
+  if (g.dsm_override[0]) wcscpy_s(candidates[n++], MAX_PATH, g.dsm_override);
+  if (GetSystemDirectoryW(candidates[n], MAX_PATH) && wcscat_s(candidates[n], MAX_PATH, L"\\TWAINDSM.dll") == 0) ++n;
+  if (GetModuleFileNameW(NULL, candidates[n], MAX_PATH)) {
+    wchar_t *slash = wcsrchr(candidates[n], L'\\');
+    if (slash && wcscpy_s(slash + 1, MAX_PATH - (size_t)(slash + 1 - candidates[n]), L"TWAINDSM.dll") == 0) ++n;
+  }
+
+  for (i = 0; i < n; ++i) {
+    char what[160], line[224];
+    DWORD err;
+    if (GetFileAttributesW(candidates[i]) == INVALID_FILE_ATTRIBUTES) continue;
+    ++tried;
+    g.dll = LoadLibraryExW(candidates[i], NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
+    if (g.dll) {
+      char ok[512] = "";
+      append_utf8(ok, sizeof ok, candidates[i]);
+      ta_log("info", "TWAIN DSM: %s", ok);
+      return 1;
+    }
+    err = GetLastError();
+    describe_dll(candidates[i], what, sizeof what);
+    strncat(report, " ", sizeof report - strlen(report) - 1);
+    append_utf8(report, sizeof report, candidates[i]);
+    snprintf(line, sizeof line, ": Windows error %lu (%s).", (unsigned long)err, what);
+    strncat(report, line, sizeof report - strlen(report) - 1);
+  }
+  if (tried == 0) {
+    strncat(report, " No TWAINDSM.dll was found in the system directory or beside the helper; install the TWAIN Data Source Manager.",
+            sizeof report - strlen(report) - 1);
+  }
+  ta_send_error("no-dsm", report, 0);
+  return 0;
+}
+
 static int open_dsm(void) {
-  wchar_t path[MAX_PATH];
   if (g.dsm_open) return 1;
   if (!g.dll) {
-    g.dll = LoadLibraryW(L"TWAINDSM.dll");
-    if (!g.dll && GetSystemDirectoryW(path, MAX_PATH)) {
-      wcscat_s(path, MAX_PATH, L"\\TWAINDSM.dll");
-      g.dll = LoadLibraryW(path);
-    }
-    if (!g.dll) {
-      ta_send_error("no-dsm", "TWAINDSM.dll could not be loaded (it must match this helper's bitness)", 0);
-      return 0;
-    }
+    if (!load_dsm()) return 0;
     g.entry = (dsm_entry_fn)(void *)GetProcAddress(g.dll, "DSM_Entry");
     if (!g.entry) {
       ta_send_error("no-dsm", "TWAINDSM.dll has no DSM_Entry", 0);
+      FreeLibrary(g.dll);
+      g.dll = NULL;
       return 0;
     }
   }
@@ -663,6 +743,10 @@ static int tw_event(ta_backend *b, void *p) {
 
 static ta_backend g_backend = {"twain", NULL, tw_list, tw_open, tw_enable, tw_disable, tw_close, NULL, tw_event};
 
-ta_backend *ta_twain_backend(void) { return &g_backend; }
+ta_backend *ta_twain_backend(const char *dsm_path) {
+  g.dsm_override[0] = 0;
+  if (dsm_path && dsm_path[0]) MultiByteToWideChar(CP_UTF8, 0, dsm_path, -1, g.dsm_override, MAX_PATH);
+  return &g_backend;
+}
 
 #endif
