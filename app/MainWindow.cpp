@@ -106,6 +106,8 @@ void MainWindow::loadConfig() {
   options_.requirePatientId = s.value("requirePatientId", true).toBool();
   options_.disarmWhenFull = s.value("disarmWhenFull", true).toBool();
   options_.dsmPath = s.value("dsmPath").toString();
+  options_.sourceBits = s.value("sourceBits", 32).toInt();
+  options_.dsmLog = s.value("dsmLog", false).toBool();
 
   std::vector<std::string> problems;
   layouts_ = ta::loadLayouts(layoutsDir_, &problems);
@@ -359,7 +361,10 @@ QStringList MainWindow::helperPrograms(QStringList* backends) const {
   QStringList programs;
   const QString dir = QCoreApplication::applicationDirPath();
 #ifdef Q_OS_WIN
+  // One helper per bitness searched: each loads the DSM of its own bitness,
+  // which lists the sources under Windows\twain_32 or Windows\twain_64.
   for (const char* bits : {"32", "64"}) {
+    if (options_.sourceBits != 0 && QString::number(options_.sourceBits) != bits) continue;
     const QString p = dir + "/ta-helper" + bits + ".exe";
     if (QFileInfo::exists(p)) {
       programs << p;
@@ -398,7 +403,8 @@ void MainWindow::scanSources() {
   }
   helperLabel_->setText(tr("Searching for sources…"));
   auto remaining = std::make_shared<int>(int(programs.size()));
-  auto finishOne = [this, remaining] {
+  auto problems = std::make_shared<QStringList>();
+  auto finishOne = [this, remaining, problems] {
     if (--*remaining > 0) return;
     const QSignalBlocker block(sourceBox_);
     sourceBox_->clear();
@@ -408,6 +414,13 @@ void MainWindow::scanSources() {
       sourceBox_->addItem(label);
     }
     if (sources_.isEmpty()) sourceBox_->addItem(tr("No TWAIN sources found"));
+    sourceBox_->setToolTip(problems->join("\n"));
+    if (sources_.isEmpty() && !problems->isEmpty()) {
+      QMessageBox box(QMessageBox::Warning, tr("TWAIN sources"),
+                      tr("No TWAIN sources were found.") + "\n\n" + problems->join("\n\n"), QMessageBox::Ok, this);
+      box.setInformativeText(tr("Setup > Log lists the data source files that were found on disk."));
+      box.exec();
+    }
     int pick = 0;
     const QString want = launch_.source.isEmpty() ? QSettings().value("source").toString() : launch_.source;
     for (int i = 0; i < sources_.size(); ++i)
@@ -424,21 +437,33 @@ void MainWindow::scanSources() {
       h->shutdown(kShutdownMs);
       finishOne();
     });
-    connect(h, &HelperClient::died, this, [this, finishOne](const QString& why) {
-      log("warn", tr("Source search: %1").arg(why));
+    const QString who = backends[i] == "sim" ? tr("Simulated") : (programs[i].contains("64") ? tr("64-bit") : tr("32-bit"));
+    connect(h, &HelperClient::died, this, [this, finishOne, problems, who](const QString& why) {
+      log("warn", tr("Source search (%1): %2").arg(who, why));
+      *problems << who + ": " + why;
       finishOne();
     });
-    connect(h, &HelperClient::failed, this, [this](const QString&, const QString& text, bool) {
-      log("warn", tr("Source search: %1").arg(text));
+    connect(h, &HelperClient::failed, this, [this, problems, who](const QString&, const QString& text, bool) {
+      log("warn", tr("Source search (%1): %2").arg(who, text));
+      *problems << who + ": " + text;
+    });
+    connect(h, &HelperClient::logLine, this, [this, who](const QString& level, const QString& text) {
+      log(level, who + ": " + text);
     });
     connect(h, &HelperClient::hello, this, [h] { h->list(kListTimeoutMs); });
-    h->start(programs[i], backends[i], helperArgs(backends[i]));
+    h->start(programs[i], backends[i], helperArgs(backends[i]), helperEnv(programs[i], backends[i]));
   }
 }
 
 QStringList MainWindow::helperArgs(const QString& backend) const {
   if (backend == "twain" && !options_.dsmPath.isEmpty()) return {"--dsm", options_.dsmPath};
   return {};
+}
+
+QStringList MainWindow::helperEnv(const QString& program, const QString& backend) const {
+  if (backend != "twain" || !options_.dsmLog) return {};
+  const QString bits = program.contains("64") ? "64" : "32";
+  return {"TWAINDSM_LOG=" + QDir::toNativeSeparators(dataDir_ + "/twaindsm-" + bits + ".log")};
 }
 
 const HelperClient::Source* MainWindow::currentSource() const {
@@ -528,7 +553,7 @@ bool MainWindow::ensureHelper() {
   connect(helper_, &HelperClient::logLine, this, [this](const QString& level, const QString& text) { log(level, text); });
   connect(helper_, &HelperClient::died, this, &MainWindow::onHelperDied);
   helperState_ = "closed";
-  helper_->start(program, s->backend, helperArgs(s->backend));
+  helper_->start(program, s->backend, helperArgs(s->backend), helperEnv(program, s->backend));
   return true;
 }
 
@@ -925,13 +950,16 @@ void MainWindow::refreshExportStatus() {
 void MainWindow::editOptions() {
   OptionsDialog d(options_, dataDir_, this);
   if (d.exec() != QDialog::Accepted) return;
-  const bool rescan = d.options().simulatedSources != options_.simulatedSources || d.options().dsmPath != options_.dsmPath;
+  const bool rescan = d.options().simulatedSources != options_.simulatedSources || d.options().dsmPath != options_.dsmPath ||
+                      d.options().sourceBits != options_.sourceBits || d.options().dsmLog != options_.dsmLog;
   options_ = d.options();
   QSettings s;
   s.setValue("simulatedSources", options_.simulatedSources);
   s.setValue("requirePatientId", options_.requirePatientId);
   s.setValue("disarmWhenFull", options_.disarmWhenFull);
   s.setValue("dsmPath", options_.dsmPath);
+  s.setValue("sourceBits", options_.sourceBits);
+  s.setValue("dsmLog", options_.dsmLog);
   if (rescan) scanSources();
 }
 

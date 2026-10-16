@@ -289,11 +289,49 @@ static void close_dsm(void) {
 
 /* ---- backend -------------------------------------------------------------- */
 
+/* Log every *.ds file under the Windows twain_32 or twain_64 folder (the one
+   this helper's DSM scans), so "no sources" can be told apart from "the DSM
+   rejected what is there". Returns the number found. */
+static int count_ds_files(const wchar_t *dir, int depth) {
+  wchar_t pattern[MAX_PATH];
+  WIN32_FIND_DATAW fd;
+  HANDLE h;
+  int found = 0;
+  if (depth > 3 || swprintf(pattern, MAX_PATH, L"%ls\\*", dir) < 0) return 0;
+  h = FindFirstFileW(pattern, &fd);
+  if (h == INVALID_HANDLE_VALUE) return 0;
+  do {
+    wchar_t full[MAX_PATH];
+    size_t n = wcslen(fd.cFileName);
+    if (!wcscmp(fd.cFileName, L".") || !wcscmp(fd.cFileName, L"..")) continue;
+    if (swprintf(full, MAX_PATH, L"%ls\\%ls", dir, fd.cFileName) < 0) continue;
+    if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+      found += count_ds_files(full, depth + 1);
+    } else if (n > 3 && _wcsicmp(fd.cFileName + n - 3, L".ds") == 0) {
+      char path[MAX_PATH * 3] = "";
+      WideCharToMultiByte(CP_UTF8, 0, full, -1, path, (int)sizeof path, NULL, NULL);
+      ta_log("info", "data source file: %s", path);
+      ++found;
+    }
+  } while (FindNextFileW(h, &fd));
+  FindClose(h);
+  return found;
+}
+
 static void tw_list(ta_backend *b) {
   TW_IDENTITY id;
   TW_UINT16 rc;
-  int opened_here = !g.dsm_open;
+  int opened_here = !g.dsm_open, listed = 0, files;
+  wchar_t folder[MAX_PATH];
+  const int bits = (int)(sizeof(void *) * 8);
   (void)b;
+
+  folder[0] = 0;
+  if (GetWindowsDirectoryW(folder, MAX_PATH))
+    wcscat_s(folder, MAX_PATH, bits == 64 ? L"\\twain_64" : L"\\twain_32");
+  files = folder[0] ? count_ds_files(folder, 0) : 0;
+  ta_log("info", "%d data source file(s) under %s", files, bits == 64 ? "twain_64" : "twain_32");
+
   if (!open_dsm()) return;
   memset(&id, 0, sizeof id);
   for (rc = dsm(NULL, DG_CONTROL, DAT_IDENTITY, MSG_GETFIRST, (TW_MEMREF)&id); rc == TWRC_SUCCESS;
@@ -307,6 +345,19 @@ static void tw_list(ta_backend *b) {
     ta_kv_append(buf, sizeof buf, &len, "twain2", (id.SupportedGroups & DF_DS2) ? "true" : "false");
     ta_send(TA_MSG_SOURCE, buf, (uint32_t)len);
     memset(&id, 0, sizeof id);
+    ++listed;
+  }
+  if (rc != TWRC_ENDOFLIST) {
+    char text[256];
+    snprintf(text, sizeof text, "the TWAIN Data Source Manager failed while listing sources (return code %u, condition %u)",
+             (unsigned)rc, (unsigned)condition(NULL));
+    ta_send_error("list", text, 0);
+  } else if (listed == 0 && files > 0) {
+    char text[256];
+    snprintf(text, sizeof text,
+             "%d data source file(s) are installed for %d-bit, but the TWAIN Data Source Manager accepted none of them",
+             files, bits);
+    ta_send_error("list", text, 0);
   }
   if (opened_here) close_dsm();
 }

@@ -27,7 +27,9 @@ class HelperClient : public QObject {
   explicit HelperClient(QObject* parent = nullptr);
   ~HelperClient() override;
 
-  bool start(const QString& program, const QString& backend, const QStringList& extraArgs = {});
+  // extraEnv: NAME=value entries added to the helper's environment.
+  bool start(const QString& program, const QString& backend, const QStringList& extraArgs = {},
+             const QStringList& extraEnv = {});
   bool isRunning() const;
   QString program() const { return program_; }
   QString backend() const { return backend_; }

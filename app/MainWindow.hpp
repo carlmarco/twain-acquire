@@ -52,6 +52,7 @@ class MainWindow : public QMainWindow {
   void scanSources();
   QStringList helperPrograms(QStringList* backends) const;
   QStringList helperArgs(const QString& backend) const;
+  QStringList helperEnv(const QString& program, const QString& backend) const;
   const HelperClient::Source* currentSource() const;
   void onSourceChanged();
   void editProfile();

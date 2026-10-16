@@ -1,5 +1,7 @@
 #include "HelperClient.hpp"
 
+#include <QProcessEnvironment>
+
 #include "ta_wire.h"
 
 HelperClient::HelperClient(QObject* parent) : QObject(parent) {
@@ -31,7 +33,8 @@ HelperClient::~HelperClient() {
   }
 }
 
-bool HelperClient::start(const QString& program, const QString& backend, const QStringList& extraArgs) {
+bool HelperClient::start(const QString& program, const QString& backend, const QStringList& extraArgs,
+                         const QStringList& extraEnv) {
   if (isRunning()) return true;
   program_ = program;
   backend_ = backend;
@@ -39,6 +42,12 @@ bool HelperClient::start(const QString& program, const QString& backend, const Q
   buffer_.clear();
   expectingExit_ = false;
   dead_ = false;
+  QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+  for (const QString& e : extraEnv) {
+    const qsizetype eq = e.indexOf('=');
+    if (eq > 0) env.insert(e.left(eq), e.mid(eq + 1));
+  }
+  proc_.setProcessEnvironment(env);
   proc_.start(program, QStringList{"--backend", backend} + extraArgs);
   return true;
 }

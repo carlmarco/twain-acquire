@@ -60,7 +60,9 @@ struct AppOptions {
   bool simulatedSources = false;
   bool requirePatientId = true;
   bool disarmWhenFull = true;
-  QString dsmPath;  // empty = the system TWAINDSM.dll
+  QString dsmPath;   // empty = the system TWAINDSM.dll
+  int sourceBits = 32;  // which TWAIN sources to search: 32, 64, or 0 for both
+  bool dsmLog = false;  // ask the DSM to write its own diagnostic log
 };
 
 class OptionsDialog : public QDialog {
@@ -70,6 +72,7 @@ class OptionsDialog : public QDialog {
   AppOptions options() const;
 
  private:
-  QCheckBox *sim_, *requireId_, *disarmFull_;
+  QCheckBox *sim_, *requireId_, *disarmFull_, *dsmLog_;
+  QComboBox* sourceBits_;
   QLineEdit* dsmPath_;
 };

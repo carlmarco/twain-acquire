@@ -306,8 +306,14 @@ OptionsDialog::OptionsDialog(const AppOptions& o, const QString& dataDir, QWidge
   v->addWidget(sim_);
   v->addWidget(requireId_);
   v->addWidget(disarmFull_);
+  sourceBits_ = combo({tr("32-bit sources (most dental sensors)"), tr("64-bit sources"), tr("Both")}, {32, 64, 0},
+                      o.sourceBits);
+  auto* bitsRow = new QHBoxLayout;
+  bitsRow->addWidget(new QLabel(tr("TWAIN sources")));
+  bitsRow->addWidget(sourceBits_, 1);
+  v->addLayout(bitsRow);
   dsmPath_ = new QLineEdit(o.dsmPath);
-  dsmPath_->setPlaceholderText(tr("System TWAINDSM.dll"));
+  dsmPath_->setPlaceholderText(tr("System TWAINDSM.dll (must match the source bitness)"));
   auto* dsmBrowse = new QPushButton(tr("Browse…"));
   connect(dsmBrowse, &QPushButton::clicked, this, [this] {
     const QString f = QFileDialog::getOpenFileName(this, tr("TWAIN Data Source Manager"), dsmPath_->text(),
@@ -319,6 +325,8 @@ OptionsDialog::OptionsDialog(const AppOptions& o, const QString& dataDir, QWidge
   dsmRow->addWidget(dsmPath_, 1);
   dsmRow->addWidget(dsmBrowse);
   v->addLayout(dsmRow);
+  dsmLog_ = check(tr("Ask the TWAIN DSM to write a diagnostic log to the data folder"), o.dsmLog);
+  v->addWidget(dsmLog_);
   auto* where = new QLabel(tr("Data folder: %1").arg(dataDir));
   where->setTextInteractionFlags(Qt::TextSelectableByMouse);
   where->setWordWrap(true);
@@ -332,5 +340,7 @@ AppOptions OptionsDialog::options() const {
   o.requirePatientId = requireId_->isChecked();
   o.disarmWhenFull = disarmFull_->isChecked();
   o.dsmPath = dsmPath_->text().trimmed();
+  o.sourceBits = sourceBits_->currentData().toInt();
+  o.dsmLog = dsmLog_->isChecked();
   return o;
 }
