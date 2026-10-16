@@ -43,6 +43,10 @@ Source: "{#StageDir}\app\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdi
 Source: "{#StageDir}\LICENSE.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#StageDir}\THIRD_PARTY_NOTICES.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#StageDir}\vc_redist.x64.exe"; DestDir: "{tmp}"; Flags: deleteafterinstall
+; A private copy of each DSM beside the helpers, used when the system copy is
+; missing or the wrong bitness.
+Source: "{#StageDir}\dsm\32\TWAINDSM.dll"; DestDir: "{app}\dsm32"; Flags: ignoreversion
+Source: "{#StageDir}\dsm\64\TWAINDSM.dll"; DestDir: "{app}\dsm64"; Flags: ignoreversion
 ; The DSM is shared by every TWAIN program on the machine: never replace an
 ; existing one and never remove it on uninstall.
 Source: "{#StageDir}\dsm\64\TWAINDSM.dll"; DestDir: "{sys}"; Flags: onlyifdoesntexist uninsneveruninstall 64bit; Tasks: twaindsm

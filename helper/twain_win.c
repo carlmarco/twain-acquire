@@ -145,38 +145,39 @@ static TW_UINT16 FAR PASCAL ds_callback(pTW_IDENTITY origin, pTW_IDENTITY dest, 
 
 /* ---- DSM ------------------------------------------------------------------ */
 
-/* What a candidate DSM file is, for the error report: size and PE machine. */
-static void describe_dll(const wchar_t *path, char *out, size_t cap) {
+/* PE machine of a DLL file: 0x014C x86, 0x8664 x64, 0xAA64 ARM64; 0 when the
+   file is not a Windows DLL, -1 when it cannot be opened. */
+static long pe_machine(const wchar_t *path, long long *size_out) {
   HANDLE f = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
   unsigned char hdr[512];
   DWORD got = 0;
   LARGE_INTEGER size;
-  const char *machine = "not a Windows DLL";
-  char hex[16];
-  if (f == INVALID_HANDLE_VALUE) {
-    snprintf(out, cap, "cannot be opened");
-    return;
-  }
+  if (f == INVALID_HANDLE_VALUE) return -1;
   size.QuadPart = 0;
   GetFileSizeEx(f, &size);
   ReadFile(f, hdr, sizeof hdr, &got, NULL);
   CloseHandle(f);
+  if (size_out) *size_out = (long long)size.QuadPart;
   if (got >= 0x40 && hdr[0] == 'M' && hdr[1] == 'Z') {
     DWORD pe = (DWORD)hdr[0x3C] | (DWORD)hdr[0x3D] << 8 | (DWORD)hdr[0x3E] << 16 | (DWORD)hdr[0x3F] << 24;
-    if (pe + 6 <= got && hdr[pe] == 'P' && hdr[pe + 1] == 'E' && hdr[pe + 2] == 0 && hdr[pe + 3] == 0) {
-      unsigned m = (unsigned)hdr[pe + 4] | (unsigned)hdr[pe + 5] << 8;
-      switch (m) {
-        case 0x014C: machine = "32-bit x86"; break;
-        case 0x8664: machine = "64-bit x64"; break;
-        case 0xAA64: machine = "ARM64"; break;
-        case 0x01C4: machine = "ARM32"; break;
-        default:
-          snprintf(hex, sizeof hex, "machine 0x%04X", m);
-          machine = hex;
-      }
-    }
+    if (pe + 6 <= got && hdr[pe] == 'P' && hdr[pe + 1] == 'E' && hdr[pe + 2] == 0 && hdr[pe + 3] == 0)
+      return (long)((unsigned)hdr[pe + 4] | (unsigned)hdr[pe + 5] << 8);
   }
-  snprintf(out, cap, "%lld bytes, %s", (long long)size.QuadPart, machine);
+  return 0;
+}
+
+static const char *machine_name(long m, char *hex, size_t cap) {
+  switch (m) {
+    case -1: return "cannot be opened";
+    case 0: return "not a Windows DLL";
+    case 0x014C: return "32-bit x86";
+    case 0x8664: return "64-bit x64";
+    case 0xAA64: return "ARM64";
+    case 0x01C4: return "ARM32";
+    default:
+      snprintf(hex, cap, "machine 0x%04lX", (unsigned long)m);
+      return hex;
+  }
 }
 
 static void append_utf8(char *buf, size_t cap, const wchar_t *w) {
@@ -184,43 +185,60 @@ static void append_utf8(char *buf, size_t cap, const wchar_t *w) {
   if (len + 1 < cap) WideCharToMultiByte(CP_UTF8, 0, w, -1, buf + len, (int)(cap - len), NULL, NULL);
 }
 
+/* Path of `name` inside the helper's own folder. */
+static int beside_helper(wchar_t *out, const wchar_t *name) {
+  wchar_t *slash;
+  if (!GetModuleFileNameW(NULL, out, MAX_PATH)) return 0;
+  slash = wcsrchr(out, L'\\');
+  return slash && wcscpy_s(slash + 1, MAX_PATH - (size_t)(slash + 1 - out), name) == 0;
+}
+
 /*
- * Load the DSM by full path only: an explicit path from the application, then
- * the system directory (WOW64 sends a 32-bit helper to SysWOW64), then the
- * helper's own folder. The bare-name search order is never used, so a stray
- * or planted TWAINDSM.dll in the current directory or on PATH is not picked up.
+ * Load the DSM by full path only, in this order: an explicit path from the
+ * application, the system directory (WOW64 sends a 32-bit helper to SysWOW64),
+ * the copy installed with this program (dsm32 or dsm64 beside the helper),
+ * then TWAINDSM.dll beside the helper. A file whose bitness does not match the
+ * helper is skipped, not loaded: some installers put the 64-bit DSM in
+ * SysWOW64. The bare-name search order is never used, so a stray or planted
+ * TWAINDSM.dll in the current directory or on PATH is not picked up.
  */
 static int load_dsm(void) {
-  wchar_t candidates[3][MAX_PATH];
+  wchar_t candidates[4][MAX_PATH];
   int n = 0, i, tried = 0;
-  char report[2048];
+  char report[3072];
   const int helper_bits = (int)(sizeof(void *) * 8);
+  const long want = helper_bits == 64 ? 0x8664 : 0x014C;
   snprintf(report, sizeof report, "TWAINDSM.dll could not be loaded by this %d-bit helper.", helper_bits);
 
   if (g.dsm_override[0]) wcscpy_s(candidates[n++], MAX_PATH, g.dsm_override);
   if (GetSystemDirectoryW(candidates[n], MAX_PATH) && wcscat_s(candidates[n], MAX_PATH, L"\\TWAINDSM.dll") == 0) ++n;
-  if (GetModuleFileNameW(NULL, candidates[n], MAX_PATH)) {
-    wchar_t *slash = wcsrchr(candidates[n], L'\\');
-    if (slash && wcscpy_s(slash + 1, MAX_PATH - (size_t)(slash + 1 - candidates[n]), L"TWAINDSM.dll") == 0) ++n;
-  }
+  if (beside_helper(candidates[n], helper_bits == 64 ? L"dsm64\\TWAINDSM.dll" : L"dsm32\\TWAINDSM.dll")) ++n;
+  if (beside_helper(candidates[n], L"TWAINDSM.dll")) ++n;
 
   for (i = 0; i < n; ++i) {
-    char what[160], line[224];
-    DWORD err;
+    char hex[24], line[256], path[MAX_PATH * 3] = "";
+    long long size = 0;
+    long m;
     if (GetFileAttributesW(candidates[i]) == INVALID_FILE_ATTRIBUTES) continue;
     ++tried;
-    g.dll = LoadLibraryExW(candidates[i], NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
-    if (g.dll) {
-      char ok[512] = "";
-      append_utf8(ok, sizeof ok, candidates[i]);
-      ta_log("info", "TWAIN DSM: %s", ok);
-      return 1;
+    append_utf8(path, sizeof path, candidates[i]);
+    m = pe_machine(candidates[i], &size);
+    if (m != want) {
+      snprintf(line, sizeof line, ": skipped, %s (%lld bytes).", machine_name(m, hex, sizeof hex), size);
+      ta_log("warn", "TWAIN DSM %s%s", path, line);
+    } else {
+      DWORD err;
+      g.dll = LoadLibraryExW(candidates[i], NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
+      if (g.dll) {
+        ta_log("info", "TWAIN DSM: %s", path);
+        return 1;
+      }
+      err = GetLastError();
+      snprintf(line, sizeof line, ": Windows error %lu (%lld bytes, %s).", (unsigned long)err, size,
+               machine_name(m, hex, sizeof hex));
     }
-    err = GetLastError();
-    describe_dll(candidates[i], what, sizeof what);
     strncat(report, " ", sizeof report - strlen(report) - 1);
-    append_utf8(report, sizeof report, candidates[i]);
-    snprintf(line, sizeof line, ": Windows error %lu (%s).", (unsigned long)err, what);
+    strncat(report, path, sizeof report - strlen(report) - 1);
     strncat(report, line, sizeof report - strlen(report) - 1);
   }
   if (tried == 0) {
