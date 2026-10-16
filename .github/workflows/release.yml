@@ -19,6 +19,9 @@ jobs:
       DSM_ZIP_SHA256: 6d5b520e0d4d524a195aa6ed749edb09d7118eed96c7defb4952bfcdb1590cee
       DSM_LICENSE_URL: https://raw.githubusercontent.com/twain/twain-dsm/v2.5.1/TWAIN_DSM/license.txt
       VC_REDIST_URL: https://aka.ms/vs/17/release/vc_redist.x64.exe
+      SPDX_TEXT_URL: https://raw.githubusercontent.com/spdx/license-list-data/v3.29.0/text
+      LGPL3_SHA256: 996af0513df21f7496288951c41428a03c174e9e4a9d63665c57d670f845ccb1
+      GPL3_SHA256: fb981668c18a279e285fc4d83fba1e836cc84dd4daa73c9697d3cfd2d8aca6e0
     defaults:
       run:
         shell: pwsh
@@ -48,20 +51,22 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force deps/twain | Out-Null
           function Get-Pinned($url, $out, $sha) {
-            Invoke-WebRequest -Uri $url -OutFile $out
+            Invoke-WebRequest -Uri $url -OutFile $out -MaximumRetryCount 5 -RetryIntervalSec 10
             $h = (Get-FileHash $out -Algorithm SHA256).Hash.ToLower()
             if ($h -ne $sha) { throw "${out}: SHA-256 $h, expected $sha" }
           }
           Get-Pinned $env:TWAIN_H_URL deps/twain/twain.h $env:TWAIN_H_SHA256
           Get-Pinned $env:DSM_ZIP_URL deps/dsm.zip $env:DSM_ZIP_SHA256
           Expand-Archive deps/dsm.zip -DestinationPath deps/dsm
-          Invoke-WebRequest -Uri $env:DSM_LICENSE_URL -OutFile deps/twain-dsm-license.txt
+          Invoke-WebRequest -Uri $env:DSM_LICENSE_URL -OutFile deps/twain-dsm-license.txt -MaximumRetryCount 5 -RetryIntervalSec 10
+          Get-Pinned "$env:SPDX_TEXT_URL/LGPL-3.0-only.txt" deps/lgpl-3.0.txt $env:LGPL3_SHA256
+          Get-Pinned "$env:SPDX_TEXT_URL/GPL-3.0-only.txt" deps/gpl-3.0.txt $env:GPL3_SHA256
           foreach ($dll in 'deps/dsm/dsm_020501/windows/32/TWAINDSM.dll', 'deps/dsm/dsm_020501/windows/64/TWAINDSM.dll') {
             $sig = Get-AuthenticodeSignature $dll
             if ($sig.Status -ne 'Valid') { throw "${dll}: signature $($sig.Status)" }
           }
           # The runtime installer changes with Microsoft's updates, so check its signature instead of a hash.
-          Invoke-WebRequest -Uri $env:VC_REDIST_URL -OutFile deps/vc_redist.x64.exe
+          Invoke-WebRequest -Uri $env:VC_REDIST_URL -OutFile deps/vc_redist.x64.exe -MaximumRetryCount 5 -RetryIntervalSec 10
           $sig = Get-AuthenticodeSignature deps/vc_redist.x64.exe
           if ($sig.Status -ne 'Valid' -or $sig.SignerCertificate.Subject -notmatch 'O=Microsoft Corporation') {
             throw "vc_redist.x64.exe: signature $($sig.Status) by $($sig.SignerCertificate.Subject)"
@@ -92,8 +97,6 @@ jobs:
           Copy-Item deps/vc_redist.x64.exe stage/
           Copy-Item LICENSE stage/LICENSE.txt
 
-          Invoke-WebRequest -Uri https://www.gnu.org/licenses/lgpl-3.0.txt -OutFile deps/lgpl-3.0.txt
-          Invoke-WebRequest -Uri https://www.gnu.org/licenses/gpl-3.0.txt -OutFile deps/gpl-3.0.txt
           $notices = @"
           twain-acquire $env:VERSION includes the following third-party software.
 
