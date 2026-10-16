@@ -106,6 +106,7 @@ Kv ExportTarget::toKv() const {
   kv.set("file-name", fileNamePattern);
   kv.setBool("apply-orientation", applyOrientation);
   kv.setBool("scale-to-full-range", scaleToFullRange);
+  kv.setBool("window-8bit", windowFor8Bit);
   kv.set("dicom.uid-root", uidRoot);
   kv.set("dicom.institution", institution);
   kv.set("dicom.manufacturer", manufacturer);
@@ -126,6 +127,7 @@ ExportTarget ExportTarget::fromKv(const Kv& kv) {
   t.fileNamePattern = kv.str("file-name", t.fileNamePattern);
   t.applyOrientation = kv.boolean("apply-orientation", true);
   t.scaleToFullRange = kv.boolean("scale-to-full-range", false);
+  t.windowFor8Bit = kv.boolean("window-8bit", false);
   t.uidRoot = kv.str("dicom.uid-root");
   t.institution = kv.str("dicom.institution");
   t.manufacturer = kv.str("dicom.manufacturer");
@@ -179,14 +181,13 @@ ExportQueue::~ExportQueue() { stop(); }
 
 void ExportQueue::loadAll() {
   std::error_code ec;
-  for (const char* sub : {"queue", "queue/done"}) {
-    for (const auto& e : std::filesystem::directory_iterator(root_ / fs::fromUtf8(sub), ec)) {
-      if (e.path().extension() != ".job") continue;
-      Kv kv;
-      if (!Kv::load(e.path(), kv)) continue;
-      ExportJob j = ExportJob::fromKv(kv);
-      if (!j.id.empty()) jobs_[j.id] = j;
-    }
+  // Only unfinished jobs; finished ones stay on disk in queue/done.
+  for (const auto& e : std::filesystem::directory_iterator(root_ / "queue", ec)) {
+    if (e.path().extension() != ".job") continue;
+    Kv kv;
+    if (!Kv::load(e.path(), kv)) continue;
+    ExportJob j = ExportJob::fromKv(kv);
+    if (!j.id.empty() && j.state != ExportJob::State::Done) jobs_[j.id] = j;
   }
 }
 
@@ -299,7 +300,10 @@ bool ExportQueue::perform(ExportJob& job, std::string* err) {
   std::vector<uint8_t> bytes;
   switch (target.format) {
     case ExportTarget::Format::Tiff8:
-      bytes = encodeTiff(frame, 8, {"twain-acquire", "", s.str("slot.label")});
+      // Either the full stored range scaled linearly, or the display window:
+      // a 12- or 14-bit image usually fills only part of its range.
+      bytes = encodeTiff(target.windowFor8Bit ? windowTo8Bit(frame, autoWindow(frame)) : frame, 8,
+                         {"twain-acquire", "", s.str("slot.label")});
       break;
     case ExportTarget::Format::Tiff16:
       bytes = encodeTiff(target.scaleToFullRange ? toBitDepth(frame, 16) : frame, 16,
@@ -393,10 +397,79 @@ std::vector<ExportJob> ExportQueue::snapshot() const {
   return out;
 }
 
+ExportQueue::Counts ExportQueue::counts() const {
+  std::lock_guard<std::mutex> lock(mu_);
+  Counts c;
+  c.doneSinceStart = doneSinceStart_;
+  for (const auto& [id, j] : jobs_) {
+    if (j.state == ExportJob::State::Pending) ++c.pending;
+    if (j.state == ExportJob::State::Failed) {
+      ++c.failed;
+      c.lastError = j.lastError;
+    }
+  }
+  return c;
+}
+
+void ExportQueue::setRetentionDays(int days) {
+  {
+    std::lock_guard<std::mutex> lock(mu_);
+    retentionDays_ = std::max(0, days);
+    lastPurgeMs_ = 0;  // apply a new setting at the worker's next pass
+  }
+  cv_.notify_all();
+}
+
+int ExportQueue::purgeNow() {
+  int days;
+  std::vector<std::string> needed;
+  {
+    std::lock_guard<std::mutex> lock(mu_);
+    days = retentionDays_;
+    for (const auto& [id, j] : jobs_) needed.push_back(fs::toUtf8(j.sessionDir.lexically_normal()));
+  }
+  if (days <= 0) return 0;
+  using Clock = std::filesystem::file_time_type::clock;
+  const auto limit = std::chrono::hours(24) * days;
+  const auto now = Clock::now();
+  std::error_code ec;
+  int removed = 0;
+
+  for (const auto& e : std::filesystem::directory_iterator(root_ / "sessions", ec)) {
+    if (!e.is_directory(ec)) continue;
+    const fs::Path journal = e.path() / "session.journal";
+    const auto written = std::filesystem::last_write_time(journal, ec);
+    if (ec || now - written < limit) {
+      ec.clear();
+      continue;
+    }
+    SessionState st;
+    if (!StagingSession::readState(e.path(), st) || !st.closed) continue;  // open: the operator decides
+    const std::string dir = fs::toUtf8(e.path().lexically_normal());
+    if (std::find(needed.begin(), needed.end(), dir) != needed.end()) continue;
+    if (std::filesystem::remove_all(e.path(), ec) > 0 && !ec) ++removed;
+    ec.clear();
+  }
+  for (const auto& e : std::filesystem::directory_iterator(root_ / "queue" / "done", ec)) {
+    if (e.path().extension() != ".job") continue;
+    const auto written = std::filesystem::last_write_time(e.path(), ec);
+    if (!ec && now - written >= limit && std::filesystem::remove(e.path(), ec)) ++removed;
+    ec.clear();
+  }
+  return removed;
+}
+
 void ExportQueue::run() {
   std::unique_lock<std::mutex> lock(mu_);
   while (!stopping_) {
     const int64_t now = fs::nowUnixMs();
+    if (retentionDays_ > 0 && now - lastPurgeMs_ >= 3600 * 1000) {
+      lastPurgeMs_ = now;
+      lock.unlock();
+      purgeNow();
+      lock.lock();
+      continue;
+    }
     ExportJob* due = nullptr;
     int64_t wake = now + 60000;
     for (auto& [id, j] : jobs_) {
@@ -422,6 +495,14 @@ void ExportQueue::run() {
     if (ok) {
       j.state = ExportJob::State::Done;
       j.lastError.clear();
+      persist(j, nullptr);
+      jobs_.erase(job.id);
+      ++doneSinceStart_;
+      auto notify = onChanged;
+      lock.unlock();
+      if (notify) notify();
+      lock.lock();
+      continue;
     } else {
       ++j.attempts;
       j.lastError = err;

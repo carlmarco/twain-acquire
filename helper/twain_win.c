@@ -556,7 +556,7 @@ static int xfer_memory(const TW_IMAGEINFO *info) {
   TW_IMAGEMEMXFER mx;
   TW_UINT32 buf_size;
   uint8_t *strip, *image = NULL;
-  size_t image_rows = 0, row_bytes;
+  size_t image_rows = 0, cap_rows = 0, row_bytes; /* rows filled / rows allocated */
   uint32_t bpp = (uint32_t)info->BitsPerPixel, w = (uint32_t)info->ImageWidth;
   TW_UINT16 rc;
   int ok = 0;
@@ -575,8 +575,8 @@ static int xfer_memory(const TW_IMAGEINFO *info) {
   strip = (uint8_t *)malloc(buf_size);
   row_bytes = (size_t)w * (bpp / 8);
   if (info->ImageLength > 0) {
-    image_rows = (size_t)info->ImageLength;
-    image = (uint8_t *)calloc(image_rows, row_bytes);
+    cap_rows = image_rows = (size_t)info->ImageLength; /* known length: always the full height */
+    image = (uint8_t *)calloc(cap_rows, row_bytes);
   }
   if (!strip || (info->ImageLength > 0 && !image)) {
     free(strip);
@@ -605,21 +605,29 @@ static int xfer_memory(const TW_IMAGEINFO *info) {
       rc = TWRC_FAILURE;
       break;
     }
-    if ((size_t)mx.YOffset + mx.Rows > image_rows) { /* unknown or wrong length: grow */
+    {
       size_t need = (size_t)mx.YOffset + mx.Rows;
-      uint8_t *grown = (uint8_t *)realloc(image, need * row_bytes);
-      if (!grown) {
-        rc = TWRC_FAILURE;
-        break;
+      if (need > cap_rows) {
+        /* Unknown or wrong length: grow by doubling, so a long image costs
+           a few copies rather than one per strip. */
+        size_t grow = cap_rows * 2 > need ? cap_rows * 2 : need;
+        uint8_t *grown;
+        if (grow < 256) grow = 256;
+        grown = (uint8_t *)realloc(image, grow * row_bytes);
+        if (!grown) {
+          rc = TWRC_FAILURE;
+          break;
+        }
+        memset(grown + cap_rows * row_bytes, 0, (grow - cap_rows) * row_bytes);
+        image = grown;
+        cap_rows = grow;
       }
-      memset(grown + image_rows * row_bytes, 0, (need - image_rows) * row_bytes);
-      image = grown;
-      image_rows = need;
+      if (need > image_rows) image_rows = need;
     }
     for (r = 0; r < mx.Rows; ++r) {
       size_t off = (size_t)(mx.YOffset + r) * row_bytes + (size_t)mx.XOffset * (bpp / 8);
       size_t n = (size_t)mx.Columns * (bpp / 8);
-      if (off + n > image_rows * row_bytes || (size_t)r * mx.BytesPerRow + n > buf_size) break;
+      if (off + n > cap_rows * row_bytes || (size_t)r * mx.BytesPerRow + n > buf_size) break;
       memcpy(image + off, strip + (size_t)r * mx.BytesPerRow, n);
     }
     if (rc == TWRC_XFERDONE) {

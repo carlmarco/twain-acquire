@@ -60,6 +60,22 @@ void buildLut(const WindowLevel& wl, int bitsStored, double gamma, bool invert,
   }
 }
 
+Frame windowTo8Bit(const Frame& f, const WindowLevel& wl) {
+  std::vector<uint8_t> lut;
+  buildLut(wl, f.bitsStored, 1.0, false, lut);
+  Frame out;
+  out.width = f.width;
+  out.height = f.height;
+  out.bitsStored = 8;
+  out.dpiX = f.dpiX;
+  out.dpiY = f.dpiY;
+  out.acquiredUnixMs = f.acquiredUnixMs;
+  out.pixels.resize(f.pixels.size());
+  const uint16_t maxv = f.maxValue();
+  for (size_t i = 0; i < f.pixels.size(); ++i) out.pixels[i] = lut[std::min(f.pixels[i], maxv)];
+  return out;
+}
+
 void renderGray8(const Frame& f, const Orientation& o, const std::vector<uint8_t>& lut,
                  double sx, double sy, double sw, double sh, uint8_t* dst, int dw, int dh,
                  int dstStride) {

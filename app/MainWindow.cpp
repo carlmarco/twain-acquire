@@ -90,6 +90,7 @@ MainWindow::MainWindow(const LaunchOptions& launch, QWidget* parent) : QMainWind
     return lookupTarget(id, out);
   });
   queue_->onChanged = [this] { QMetaObject::invokeMethod(this, [this] { refreshExportStatus(); }, Qt::QueuedConnection); };
+  queue_->setRetentionDays(options_.retentionDays);
   queue_->start();
   connect(&exportTimer_, &QTimer::timeout, this, &MainWindow::refreshExportStatus);
   exportTimer_.start(2000);
@@ -143,6 +144,7 @@ void MainWindow::loadConfig() {
   options_.fileDateFormat = s.value("handoffFile/dateFormat", "YYYYMMDD").toString();
   options_.watchFile = s.value("handoffFile/watch").toString();
   options_.deleteFileAfterRead = s.value("handoffFile/deleteAfterRead", false).toBool();
+  options_.retentionDays = s.value("retentionDays", 7).toInt();
 
   std::vector<std::string> problems;
   layouts_ = ta::loadLayouts(layoutsDir_, &problems);
@@ -354,10 +356,18 @@ void MainWindow::buildUi() {
   resize(1280, 800);
 }
 
+// The log holds no patient details: it is kept for support, often sent on,
+// and outlives the sessions. It is capped at about 1 MB plus one older file.
 void MainWindow::log(const QString& level, const QString& text) {
   const QString line = QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss") + "  " + level + "  " + text;
   if (logView_) logView_->appendPlainText(line);
-  QFile f(dataDir_ + "/twain-acquire.log");
+  const QString path = dataDir_ + "/twain-acquire.log";
+  constexpr qint64 kMaxLog = 1024 * 1024;
+  if (QFileInfo(path).size() > kMaxLog) {
+    QFile::remove(path + ".1");
+    QFile::rename(path, path + ".1");
+  }
+  QFile f(path);
   if (f.open(QIODevice::Append | QIODevice::Text)) f.write((line + "\n").toUtf8());
 }
 
@@ -975,25 +985,19 @@ void MainWindow::exportSession() {
   QCoreApplication::processEvents();
   setPatientFields(ta::PatientInfo{});
   refreshExportStatus();
-  status(tr("Export queued for %1.").arg(name));
+  // The name is shown, not logged.
+  statusBar()->showMessage(tr("Export queued for %1.").arg(name), 8000);
+  log("info", tr("Export queued"));
 }
 
 void MainWindow::refreshExportStatus() {
-  int pending = 0, failed = 0;
-  QString lastError;
-  for (const auto& j : queue_->snapshot()) {
-    if (j.state == ta::ExportJob::State::Pending) ++pending;
-    if (j.state == ta::ExportJob::State::Failed) {
-      ++failed;
-      lastError = q(j.lastError);
-    }
-  }
-  QString text = pending ? tr("Exporting: %1 waiting").arg(pending) : tr("Exports up to date");
-  if (failed) text += tr(" — %1 FAILED").arg(failed);
+  const ta::ExportQueue::Counts c = queue_->counts();
+  QString text = c.pending ? tr("Exporting: %1 waiting").arg(c.pending) : tr("Exports up to date");
+  if (c.failed) text += tr(" — %1 FAILED").arg(c.failed);
   exportLabel_->setText(text);
-  exportLabel_->setToolTip(lastError);
-  exportLabel_->setStyleSheet(failed ? "color:#c62828;font-weight:bold;" : "");
-  retryButton_->setVisible(failed > 0);
+  exportLabel_->setToolTip(q(c.lastError));
+  exportLabel_->setStyleSheet(c.failed ? "color:#c62828;font-weight:bold;" : "");
+  retryButton_->setVisible(c.failed > 0);
 }
 
 ta::HandoffTemplate MainWindow::handoffTemplate() const {
@@ -1205,6 +1209,8 @@ void MainWindow::editOptions() {
   s.setValue("handoffFile/dateFormat", options_.fileDateFormat);
   s.setValue("handoffFile/watch", options_.watchFile);
   s.setValue("handoffFile/deleteAfterRead", options_.deleteFileAfterRead);
+  s.setValue("retentionDays", options_.retentionDays);
+  queue_->setRetentionDays(options_.retentionDays);
   s.sync();
   watchHandoffFile();
   if (rescan) scanSources();

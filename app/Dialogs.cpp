@@ -176,6 +176,7 @@ TargetDialog::TargetDialog(const ta::ExportTarget& t, QWidget* parent) : QDialog
   pattern_->setToolTip(tr("Tokens: {patient-id} {family} {given} {date} {time} {seq} {slot} {session} {uid}"));
   orient_ = check(tr("Apply rotation and mirroring to the pixels"), t.applyOrientation);
   scale_ = check(tr("16-bit TIFF: stretch to the full 16-bit range"), t.scaleToFullRange);
+  window8_ = check(tr("8-bit TIFF: apply the automatic display window (as on screen)"), t.windowFor8Bit);
 
   uidRoot_ = new QLineEdit(QString::fromStdString(t.uidRoot));
   uidRoot_->setPlaceholderText(tr("empty = UUID-derived (2.25.…)"));
@@ -194,6 +195,7 @@ TargetDialog::TargetDialog(const ta::ExportTarget& t, QWidget* parent) : QDialog
   f->addRow(tr("File name"), pattern_);
   f->addRow(orient_);
   f->addRow(scale_);
+  f->addRow(window8_);
   auto* dicom = new QFormLayout;
   dicom->addRow(tr("UID root"), uidRoot_);
   dicom->addRow(tr("Institution"), institution_);
@@ -231,6 +233,7 @@ ta::ExportTarget TargetDialog::target() const {
   t.fileNamePattern = pattern_->text().trimmed().toStdString();
   t.applyOrientation = orient_->isChecked();
   t.scaleToFullRange = scale_->isChecked();
+  t.windowFor8Bit = window8_->isChecked();
   t.uidRoot = uidRoot_->text().trimmed().toStdString();
   t.institution = institution_->text().trimmed().toStdString();
   t.manufacturer = manufacturer_->text().trimmed().toStdString();
@@ -307,10 +310,19 @@ OptionsDialog::OptionsDialog(const AppOptions& o, const QString& dataDir, QWidge
   sim_ = check(tr("Show simulated sources"), o.simulatedSources);
   requireId_ = check(tr("Require a patient ID before exporting"), o.requirePatientId);
   disarmFull_ = check(tr("Disarm when every slot is filled"), o.disarmWhenFull);
+  retention_ = spin(0, 3650, o.retentionDays, tr("Never"));
+  retention_->setSuffix(tr(" days"));
+  retention_->setToolTip(tr("Images and patient details of exported sessions are deleted from this PC after this "
+                            "many days. Sessions not yet exported are never deleted."));
   auto* v = new QVBoxLayout(this);
   v->addWidget(sim_);
   v->addWidget(requireId_);
   v->addWidget(disarmFull_);
+  auto* retentionRow = new QHBoxLayout;
+  retentionRow->addWidget(new QLabel(tr("Delete exported sessions after")));
+  retentionRow->addWidget(retention_);
+  retentionRow->addStretch();
+  v->addLayout(retentionRow);
   sourceBits_ = combo({tr("32-bit sources (most dental sensors)"), tr("64-bit sources"), tr("Both")}, {32, 64, 0},
                       o.sourceBits);
   auto* bitsRow = new QHBoxLayout;
@@ -444,6 +456,7 @@ AppOptions OptionsDialog::options() const {
   o.fileDateFormat = fileDate_->currentData().toString();
   o.watchFile = watchFile_->text().trimmed();
   o.deleteFileAfterRead = deleteFile_->isChecked();
+  o.retentionDays = retention_->value();
   return o;
 }
 

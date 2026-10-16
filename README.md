@@ -86,6 +86,14 @@ Settings, export destinations, source profiles and layouts are plain text files
 in the data folder (`--data-dir`, or the per-user application data folder), so a
 configured office can be copied to another PC.
 
+## Patient data on this PC
+
+Staged images and patient details stay in the data folder until exported.
+Exported sessions, and the records of finished exports, are deleted after a
+number of days set in Setup > Options (7 by default; "Never" keeps them).
+Sessions that were not exported are never deleted automatically. The log file
+holds no patient names and is capped at about 1 MB plus one older file.
+
 ## License
 
 MIT. See `LICENSE`.

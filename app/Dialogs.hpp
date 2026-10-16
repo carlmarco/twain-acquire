@@ -42,7 +42,7 @@ class TargetDialog : public QDialog {
   ta::ExportTarget base_;
   QLineEdit *name_, *folder_, *pattern_, *uidRoot_, *institution_, *manufacturer_, *model_;
   QComboBox *format_, *relationship_, *sign_;
-  QCheckBox *enabled_, *orient_, *scale_, *window_;
+  QCheckBox *enabled_, *orient_, *scale_, *window_, *window8_;
 };
 
 // The list of export destinations.
@@ -74,6 +74,7 @@ struct AppOptions {
   QString fileDateFormat = "YYYYMMDD";
   QString watchFile;
   bool deleteFileAfterRead = false;
+  int retentionDays = 7;  // delete exported sessions after this many days; 0 = keep
 };
 
 class OptionsDialog : public QDialog {
@@ -89,6 +90,7 @@ class OptionsDialog : public QDialog {
   QLineEdit *fileId_, *fileFamily_, *fileGiven_, *fileName_, *fileBirth_, *fileSex_, *fileAccession_, *watchFile_;
   QComboBox* fileDate_;
   QCheckBox* deleteFile_;
+  QSpinBox* retention_;
   QLineEdit* dsmPath_;
 };
 

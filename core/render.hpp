@@ -23,6 +23,10 @@ WindowLevel autoWindow(const Frame& f, double lowPct = 0.5, double highPct = 99.
 void buildLut(const WindowLevel& wl, int bitsStored, double gamma, bool invert,
               std::vector<uint8_t>& lut);
 
+// An 8-bit copy of `f` with the window applied through the same lookup table
+// the screen uses: values below the window go black, above it white.
+Frame windowTo8Bit(const Frame& f, const WindowLevel& wl);
+
 // Render the oriented region (sx, sy, sw, sh) of `f` into an 8-bit buffer of
 // dw x dh pixels. Shrinking averages up to 4x4 source pixels per output pixel;
 // enlarging uses the nearest pixel so individual pixels stay visible.

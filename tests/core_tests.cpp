@@ -273,6 +273,28 @@ TEST("render: 1:1 is the LUT, orientation matches, shrinking averages") {
   CHECK(wl.width > 0 && wl.center > 0);
 }
 
+TEST("render: 8-bit window maps through the display lookup table") {
+  Frame f = pattern(16, 8, 12);
+  for (size_t i = 0; i < f.pixels.size(); ++i) f.pixels[i] = uint16_t(1000 + (i * 7) % 500);  // narrow band
+  const WindowLevel wl = autoWindow(f);
+  const Frame w = windowTo8Bit(f, wl);
+  std::vector<uint8_t> lut;
+  buildLut(wl, 12, 1.0, false, lut);
+  bool same = w.bitsStored == 8 && w.width == 16 && w.dpiX == f.dpiX;
+  uint16_t lo = 255, hi = 0;
+  for (size_t i = 0; i < f.pixels.size(); ++i) {
+    same &= w.pixels[i] == lut[f.pixels[i]];
+    lo = std::min(lo, w.pixels[i]);
+    hi = std::max(hi, w.pixels[i]);
+  }
+  CHECK(same);
+  CHECK(hi - lo > 200);                                       // the band now spans most of 8 bits
+  const Frame linear = toBitDepth(f, 8);
+  uint16_t llo = 255, lhi = 0;
+  for (uint16_t v : linear.pixels) llo = std::min(llo, v), lhi = std::max(lhi, v);
+  CHECK(lhi - llo < 40);                                      // whereas linear scaling stays flat
+}
+
 TEST("staging: journal replays every change; torn line and damaged file are caught") {
   const fs::Path root = tempDir("staging");
   PatientInfo p;
@@ -390,18 +412,19 @@ TEST("export: jobs survive restart, outputs written, collisions refused") {
   }
   // A new queue object (as after a restart) finds the jobs on disk.
   ExportQueue q(root, lookup);
-  CHECK(q.snapshot().size() == 4);
+  const auto waiting = q.snapshot();
+  CHECK(waiting.size() == 4);
   q.start();
-  for (int i = 0; i < 200; ++i) {
-    bool done = true;
-    for (const auto& j : q.snapshot()) done &= j.state == ExportJob::State::Done;
-    if (done) break;
+  for (int i = 0; i < 200 && q.counts().doneSinceStart < 4; ++i)
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
-  }
   q.stop();
-  int done = 0;
-  for (const auto& j : q.snapshot()) done += j.state == ExportJob::State::Done;
-  CHECK(done == 4);
+  // Finished jobs leave memory and are only counted; their files move to done/.
+  CHECK(q.counts().doneSinceStart == 4 && q.counts().pending == 0);
+  CHECK(q.snapshot().empty());
+  int doneFiles = 0;
+  for (const auto& e : std::filesystem::directory_iterator(root / "queue" / "done")) doneFiles += e.path().extension() == ".job";
+  CHECK(doneFiles == 4);
+  CHECK(ExportQueue(root, lookup).snapshot().empty());  // a restart does not load them back
   CHECK(std::filesystem::exists(out / "tiff" / "Roe_Left bitewing.tif"));
   CHECK(std::filesystem::exists(out / "tiff" / "Roe_Right bitewing.tif"));
   Frame rotated;
@@ -410,8 +433,7 @@ TEST("export: jobs survive restart, outputs written, collisions refused") {
   CHECK(decodeTiff(bytes.data(), bytes.size(), rotated) && rotated.width == 30 && rotated.height == 40);
 
   // Running a finished job again is recognised as already done...
-  auto jobs = q.snapshot();
-  ExportJob again = jobs.front();
+  ExportJob again = waiting.front();
   CHECK(q.perform(again, &err));
   // ...but a different file under that name is never overwritten.
   ExportJob other = again;
@@ -429,16 +451,61 @@ TEST("export: jobs survive restart, outputs written, collisions refused") {
   s2->addImage(pattern(8, 8), 0);
   CHECK(q2.enqueueSession(s2->dir(), s2->state(), builtinLayouts()[0], {dcm}, &e2) == 1);
   q2.start();
-  for (int i = 0; i < 200; ++i) {
-    bool failed = false;
-    for (const auto& j : q2.snapshot()) failed |= j.state == ExportJob::State::Failed;
-    if (failed) break;
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
-  }
+  for (int i = 0; i < 200 && q2.counts().failed == 0; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(10));
   q2.stop();
-  int failedCount = 0;
-  for (const auto& j : q2.snapshot()) failedCount += j.state == ExportJob::State::Failed;
-  CHECK(failedCount == 1);
+  CHECK(q2.counts().failed == 1 && !q2.counts().lastError.empty());
+  std::filesystem::remove_all(root);
+}
+
+TEST("export: purge removes old exported sessions and job files, keeps open and needed ones") {
+  const fs::Path root = tempDir("purge");
+  std::string err;
+  auto ago = [](const fs::Path& p, int days) {
+    std::filesystem::last_write_time(p, std::filesystem::file_time_type::clock::now() - std::chrono::hours(24) * days);
+  };
+  // Exported long ago: goes.
+  auto oldDone = StagingSession::create(root, "single", "Sim", PatientInfo{"1", "A", "", "", "", ""}, &err);
+  oldDone->addImage(pattern(8, 8), 0);
+  oldDone->close("exported");
+  ago(oldDone->dir() / "session.journal", 30);
+  // Open (never exported) and old: stays, the operator decides.
+  auto oldOpen = StagingSession::create(root, "single", "Sim", PatientInfo{"2", "B", "", "", "", ""}, &err);
+  oldOpen->addImage(pattern(8, 8), 0);
+  ago(oldOpen->dir() / "session.journal", 30);
+  // Exported recently: stays.
+  auto recent = StagingSession::create(root, "single", "Sim", PatientInfo{"3", "C", "", "", "", ""}, &err);
+  recent->close("exported");
+  // Old and closed, but a failed job still needs it: stays.
+  auto needed = StagingSession::create(root, "single", "Sim", PatientInfo{"4", "D", "", "", "", ""}, &err);
+  needed->addImage(pattern(8, 8), 0);
+  ExportTarget missing;
+  missing.id = "gone";
+  missing.folder = root / "out";
+  {
+    ExportQueue tmp(root, [](const std::string&, ExportTarget&) { return false; });
+    CHECK(tmp.enqueueSession(needed->dir(), needed->state(), builtinLayouts()[0], {missing}, &err) == 1);
+  }
+  needed->close("exported");
+  ago(needed->dir() / "session.journal", 30);
+  // Finished-job files: one old, one new.
+  std::filesystem::create_directories(root / "queue" / "done");
+  ExportJob j;
+  j.id = "old";
+  j.state = ExportJob::State::Done;
+  j.toKv().save(root / "queue" / "done" / "old.job");
+  ago(root / "queue" / "done" / "old.job", 30);
+  j.id = "new";
+  j.toKv().save(root / "queue" / "done" / "new.job");
+
+  ExportQueue q(root, [](const std::string&, ExportTarget&) { return false; });
+  CHECK(q.purgeNow() == 0);  // retention 0 keeps everything
+  q.setRetentionDays(7);
+  CHECK(q.purgeNow() == 2);
+  CHECK(!std::filesystem::exists(oldDone->dir()));
+  CHECK(std::filesystem::exists(oldOpen->dir()) && std::filesystem::exists(recent->dir()));
+  CHECK(std::filesystem::exists(needed->dir()));
+  CHECK(!std::filesystem::exists(root / "queue" / "done" / "old.job"));
+  CHECK(std::filesystem::exists(root / "queue" / "done" / "new.job"));
   std::filesystem::remove_all(root);
 }
 
