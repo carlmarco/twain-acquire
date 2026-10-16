@@ -1,0 +1,26 @@
+# Build output
+/build*/
+*.o
+*.obj
+*.exe
+*.dll
+*.pdb
+*.lib
+*.a
+*.dylib
+CMakeUserPresets.json
+
+# Editors and OS
+.DS_Store
+.vscode/
+.idea/
+*.swp
+
+# Never commit images or patient data
+*.dcm
+*.tif
+*.tiff
+*.raw
+
+# Not part of the repository
+/docs/
