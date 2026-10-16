@@ -33,6 +33,14 @@ cmake --build build32 --config Release
 ```
 
 This produces `ta-helper32.exe`; the 64-bit build produces `ta-helper64.exe`.
+The helpers can also be cross-compiled with MinGW-w64:
+
+```
+cmake -S . -B build-w32 -DCMAKE_TOOLCHAIN_FILE=cmake/mingw-i686.cmake -DTA_HELPER_ONLY=ON -DTWAIN_INCLUDE_DIR=<dir with twain.h>
+cmake --build build-w32
+```
+
+Use `cmake/mingw-x86_64.cmake` for the 64-bit helper.
 Each helper loads the TWAIN Data Source Manager (`TWAINDSM.dll`) of its own
 bitness. Without `twain.h`, the helper is built with simulated sources only;
 run the application with `--simulate` to use them.

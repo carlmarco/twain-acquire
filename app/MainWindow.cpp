@@ -23,6 +23,7 @@
 #include <QStatusBar>
 #include <QToolBar>
 #include <QVBoxLayout>
+#include <algorithm>
 #include <system_error>
 
 #include "ImageView.hpp"
