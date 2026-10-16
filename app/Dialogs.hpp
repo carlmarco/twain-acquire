@@ -66,6 +66,12 @@ struct AppOptions {
   QString handoffPreset = "twain-acquire";  // a preset id, or "custom"
   QString handoffPattern;                    // used when the preset is "custom"
   QString handoffDateFormat = "YYYYMMDD";
+  // Handoff file: where each field sits ("Key" or "Section/Key"), and an
+  // optional file to watch for the current patient.
+  QString fileId, fileFamily, fileGiven, fileName, fileBirth, fileSex, fileAccession;
+  QString fileDateFormat = "YYYYMMDD";
+  QString watchFile;
+  bool deleteFileAfterRead = false;
 };
 
 class OptionsDialog : public QDialog {
@@ -78,5 +84,8 @@ class OptionsDialog : public QDialog {
   QCheckBox *sim_, *requireId_, *disarmFull_, *dsmLog_;
   QComboBox *sourceBits_, *handoffPreset_, *handoffDate_;
   QLineEdit* handoffPattern_;
+  QLineEdit *fileId_, *fileFamily_, *fileGiven_, *fileName_, *fileBirth_, *fileSex_, *fileAccession_, *watchFile_;
+  QComboBox* fileDate_;
+  QCheckBox* deleteFile_;
   QLineEdit* dsmPath_;
 };

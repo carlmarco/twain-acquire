@@ -21,6 +21,14 @@ Placeholders: `{id}` `{family}` `{given}` `{birth}` `{sex}` `{accession}` and
 (`--patient-id`, `--family`, `--given`, `--birth`, `--sex`, `--accession`) are
 always understood.
 
+The patient can also come from a file of `key=value` lines, optionally under
+`[section]` headers, in UTF-8 or the Windows code page. Name the file on the
+command line with `{file}` in the template (for example `/FILE {file}`), or set
+a file to watch that the practice software rewrites for the current patient.
+Options > Handoff file says where each field is (`Key` or `Section/Key`). A
+watched file found at startup is used only if it was written within the last
+two minutes.
+
 When twain-acquire is already running, a new launch passes its patient to the
 open window and exits. A different patient never replaces one whose images are
 not yet exported without asking, and is refused while the sensor is armed.
@@ -62,6 +70,12 @@ Use `cmake/mingw-x86_64.cmake` for the 64-bit helper.
 Each helper loads the TWAIN Data Source Manager (`TWAINDSM.dll`) of its own
 bitness. Without `twain.h`, the helper is built with simulated sources only;
 run the application with `--simulate` to use them.
+
+## Settings
+
+Settings, export destinations, source profiles and layouts are plain text files
+in the data folder (`--data-dir`, or the per-user application data folder), so a
+configured office can be copied to another PC.
 
 ## License
 

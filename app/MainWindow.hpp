@@ -16,6 +16,8 @@
 #include "profile.hpp"
 
 class HandoffChannel;
+class QSettings;
+class QFileSystemWatcher;
 class ImageView;
 class MountView;
 class Stager;
@@ -99,11 +101,18 @@ class MainWindow : public QMainWindow {
   // patient handoff from practice software
   ta::HandoffTemplate handoffTemplate() const;
   void applyHandoff(const QStringList& args, bool atStartup);
+  ta::HandoffFileMapping fileMapping() const;
+  bool readHandoffFile(const QString& path, ta::HandoffResult& out);
+  void watchHandoffFile();
+  void checkWatchedFile(bool atStartup);
+  // Apply a patient from the practice software, with the session guard.
+  void applyPatient(const ta::PatientInfo& incoming, const QString& origin);
   void log(const QString& level, const QString& text);
   void status(const QString& text);
   const ta::Layout& layout() const;
 
   LaunchOptions launch_;
+  std::unique_ptr<QSettings> settings_;  // <data folder>/settings.ini
   QString dataDir_;
   ta::fs::Path profilesDir_, targetsDir_, layoutsDir_;
   AppOptions options_;
@@ -131,6 +140,9 @@ class MainWindow : public QMainWindow {
 
   int viewedSeq_ = -1;
   HandoffChannel* handoff_ = nullptr;
+  QFileSystemWatcher* watcher_ = nullptr;
+  QTimer watchDebounce_;
+  QByteArray lastWatchedHash_;
   QString patientOrigin_;  // where the patient fields came from, shown before export
 
   // widgets

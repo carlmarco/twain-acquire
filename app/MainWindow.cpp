@@ -10,6 +10,8 @@
 #include <QDockWidget>
 #include <QFile>
 #include <QFileInfo>
+#include <QFileSystemWatcher>
+#include <QCryptographicHash>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
@@ -49,6 +51,18 @@ MainWindow::MainWindow(const LaunchOptions& launch, QWidget* parent) : QMainWind
   layoutsDir_ = root / "layouts";
   std::error_code ec;
   for (const auto& d : {profilesDir_, targetsDir_, layoutsDir_}) std::filesystem::create_directories(d, ec);
+
+  // Settings live in the data folder with the profiles and destinations, so one
+  // office's setup can be copied to another PC. Earlier versions kept them in
+  // the per-user store; those are copied over once.
+  const QString iniPath = dataDir_ + "/settings.ini";
+  const bool fresh = !QFileInfo::exists(iniPath);
+  settings_ = std::make_unique<QSettings>(iniPath, QSettings::IniFormat);
+  if (fresh) {
+    QSettings old;
+    for (const QString& key : old.allKeys()) settings_->setValue(key, old.value(key));
+    settings_->sync();
+  }
 
   loadConfig();
   buildUi();
@@ -94,6 +108,8 @@ MainWindow::MainWindow(const LaunchOptions& launch, QWidget* parent) : QMainWind
   QTimer::singleShot(0, this, [this] {
     offerRecovery();
     applyHandoff(launch_.args, true);
+    watchHandoffFile();
+    checkWatchedFile(true);
     scanSources();
   });
 }
@@ -107,7 +123,7 @@ MainWindow::~MainWindow() {
 // ---- configuration ---------------------------------------------------------
 
 void MainWindow::loadConfig() {
-  QSettings s;
+  QSettings& s = *settings_;
   options_.simulatedSources = s.value("simulatedSources", false).toBool() || launch_.simulate;
   options_.requirePatientId = s.value("requirePatientId", true).toBool();
   options_.disarmWhenFull = s.value("disarmWhenFull", true).toBool();
@@ -117,6 +133,16 @@ void MainWindow::loadConfig() {
   options_.handoffPreset = s.value("handoffPreset", "twain-acquire").toString();
   options_.handoffPattern = s.value("handoffPattern").toString();
   options_.handoffDateFormat = s.value("handoffDateFormat", "YYYYMMDD").toString();
+  options_.fileId = s.value("handoffFile/id").toString();
+  options_.fileFamily = s.value("handoffFile/family").toString();
+  options_.fileGiven = s.value("handoffFile/given").toString();
+  options_.fileName = s.value("handoffFile/name").toString();
+  options_.fileBirth = s.value("handoffFile/birth").toString();
+  options_.fileSex = s.value("handoffFile/sex").toString();
+  options_.fileAccession = s.value("handoffFile/accession").toString();
+  options_.fileDateFormat = s.value("handoffFile/dateFormat", "YYYYMMDD").toString();
+  options_.watchFile = s.value("handoffFile/watch").toString();
+  options_.deleteFileAfterRead = s.value("handoffFile/deleteAfterRead", false).toBool();
 
   std::vector<std::string> problems;
   layouts_ = ta::loadLayouts(layoutsDir_, &problems);
@@ -195,7 +221,7 @@ void MainWindow::buildUi() {
     const int at = layoutBox_->findData(launch_.layout);
     if (at >= 0) layoutBox_->setCurrentIndex(at);
   } else {
-    const int at = layoutBox_->findData(QSettings().value("layout").toString());
+    const int at = layoutBox_->findData(settings_->value("layout").toString());
     if (at >= 0) layoutBox_->setCurrentIndex(at);
   }
   connect(layoutBox_, &QComboBox::currentIndexChanged, this, [this] {
@@ -208,7 +234,7 @@ void MainWindow::buildUi() {
       }
     }
     mount_->setLayout(layout());
-    QSettings().setValue("layout", q(layout().id));
+    settings_->setValue("layout", q(layout().id));
   });
 
   armButton_ = new QPushButton(tr("Arm sensor"));
@@ -435,7 +461,7 @@ void MainWindow::scanSources() {
       box.exec();
     }
     int pick = 0;
-    const QString want = launch_.source.isEmpty() ? QSettings().value("source").toString() : launch_.source;
+    const QString want = launch_.source.isEmpty() ? settings_->value("source").toString() : launch_.source;
     for (int i = 0; i < sources_.size(); ++i)
       if (sources_[i].name == want) pick = i;
     sourceBox_->setCurrentIndex(pick);
@@ -490,7 +516,7 @@ void MainWindow::onSourceChanged() {
   const bool known = std::filesystem::exists(ta::SourceProfile::pathFor(profilesDir_, s->name.toStdString()));
   profile_ = ta::SourceProfile::load(profilesDir_, s->name.toStdString());
   if (!known && s->bits) profile_.helperBits = s->bits;
-  QSettings().setValue("source", s->name);
+  settings_->setValue("source", s->name);
   // A different source needs a fresh open.
   if (helper_ && helper_->isRunning() && helperState_ != "armed" && helperState_ != "transferring") {
     helper_->shutdown(kShutdownMs);
@@ -972,6 +998,44 @@ ta::HandoffTemplate MainWindow::handoffTemplate() const {
           options_.handoffDateFormat.toStdString()};
 }
 
+ta::HandoffFileMapping MainWindow::fileMapping() const {
+  ta::HandoffFileMapping m;
+  m.id = options_.fileId.toStdString();
+  m.family = options_.fileFamily.toStdString();
+  m.given = options_.fileGiven.toStdString();
+  m.name = options_.fileName.toStdString();
+  m.birth = options_.fileBirth.toStdString();
+  m.sex = options_.fileSex.toStdString();
+  m.accession = options_.fileAccession.toStdString();
+  m.dateFormat = options_.fileDateFormat.toStdString();
+  return m;
+}
+
+bool MainWindow::readHandoffFile(const QString& path, ta::HandoffResult& out) {
+  constexpr qint64 kMaxHandoffFile = 64 * 1024;
+  const ta::HandoffFileMapping m = fileMapping();
+  if (!m.any()) {
+    log("warn", tr("Patient handoff: a handoff file was given, but no file fields are set up in Options"));
+    return false;
+  }
+  QFile f(path);
+  if (!f.open(QIODevice::ReadOnly)) {
+    log("warn", tr("Patient handoff: cannot read %1").arg(QDir::toNativeSeparators(path)));
+    return false;
+  }
+  if (f.size() > kMaxHandoffFile) {
+    log("warn", tr("Patient handoff: %1 is larger than a handoff file can be").arg(QDir::toNativeSeparators(path)));
+    return false;
+  }
+  const QByteArray raw = f.readAll();
+  f.close();
+  out = ta::parseHandoffFile(ta::decodeHandoffText(raw.toStdString()), m);
+  for (const auto& problem : out.problems) log("warn", tr("Patient handoff file: %1").arg(q(problem)));
+  if (options_.deleteFileAfterRead && !QFile::remove(path))
+    log("warn", tr("Patient handoff: could not delete %1").arg(QDir::toNativeSeparators(path)));
+  return true;
+}
+
 void MainWindow::applyHandoff(const QStringList& args, bool atStartup) {
   if (!atStartup) {
     // Another launch: bring this window forward even if it carries no patient.
@@ -986,22 +1050,72 @@ void MainWindow::applyHandoff(const QStringList& args, bool atStartup) {
   if (t.id != "twain-acquire") {
     // twain-acquire's own flags are always understood as well; the chosen format wins.
     const ta::HandoffResult own = ta::parseHandoff(ta::handoffPresets().front(), a);
-    ta::PatientInfo& p = r.patient;
-    if (p.id.empty()) p.id = own.patient.id;
-    if (p.familyName.empty()) p.familyName = own.patient.familyName;
-    if (p.givenName.empty()) p.givenName = own.patient.givenName;
-    if (p.birthDate.empty()) p.birthDate = own.patient.birthDate;
-    if (p.sex.empty()) p.sex = own.patient.sex;
-    if (p.accession.empty()) p.accession = own.patient.accession;
+    ta::fillBlanks(r.patient, own.patient);
     r.matched = r.matched || own.matched;
+    if (r.file.empty()) r.file = own.file;
   }
   for (const auto& problem : r.problems) log("warn", tr("Patient handoff: %1").arg(q(problem)));
-  if (!r.matched) return;
+  QString origin = tr("sent by the practice software (%1)").arg(q(t.name));
+  if (!r.file.empty()) {
+    ta::HandoffResult f;
+    if (readHandoffFile(QString::fromStdString(r.file), f)) {
+      // Arguments win; the file fills what they did not carry.
+      ta::fillBlanks(r.patient, f.patient);
+      r.matched = r.matched || f.matched;
+      origin = tr("sent by the practice software (%1, handoff file)").arg(q(t.name));
+    }
+  }
+  if (r.matched) applyPatient(r.patient, origin);
+}
 
+void MainWindow::watchHandoffFile() {
+  if (!watcher_) {
+    watcher_ = new QFileSystemWatcher(this);
+    watchDebounce_.setSingleShot(true);
+    watchDebounce_.setInterval(400);  // writers often save in several steps
+    connect(&watchDebounce_, &QTimer::timeout, this, [this] { checkWatchedFile(false); });
+    auto kick = [this] { watchDebounce_.start(); };
+    connect(watcher_, &QFileSystemWatcher::fileChanged, this, kick);
+    connect(watcher_, &QFileSystemWatcher::directoryChanged, this, kick);
+  }
+  if (!watcher_->files().isEmpty()) watcher_->removePaths(watcher_->files());
+  if (!watcher_->directories().isEmpty()) watcher_->removePaths(watcher_->directories());
+  lastWatchedHash_.clear();
+  if (options_.watchFile.isEmpty()) return;
+  const QFileInfo info(options_.watchFile);
+  // The folder too: a file replaced by rename drops off a file watch.
+  if (info.absoluteDir().exists()) watcher_->addPath(info.absolutePath());
+  if (info.exists()) watcher_->addPath(info.absoluteFilePath());
+}
+
+void MainWindow::checkWatchedFile(bool atStartup) {
+  if (options_.watchFile.isEmpty()) return;
+  const QFileInfo info(options_.watchFile);
+  if (!info.exists()) {
+    lastWatchedHash_.clear();
+    return;
+  }
+  if (watcher_ && !watcher_->files().contains(info.absoluteFilePath())) watcher_->addPath(info.absoluteFilePath());
+  QFile peek(info.absoluteFilePath());
+  if (!peek.open(QIODevice::ReadOnly)) return;
+  const QByteArray hash = QCryptographicHash::hash(peek.read(64 * 1024), QCryptographicHash::Sha256);
+  peek.close();
+  if (hash == lastWatchedHash_) return;  // touched, not changed
+  lastWatchedHash_ = hash;
+  // A file left from an earlier day must not fill in that day's patient: at
+  // startup it counts only if it was written moments ago, which is what a
+  // practice program that writes the file and then starts us does.
+  constexpr qint64 kFreshSeconds = 120;
+  if (atStartup && info.lastModified().secsTo(QDateTime::currentDateTime()) > kFreshSeconds) return;
+  ta::HandoffResult r;
+  if (!readHandoffFile(info.absoluteFilePath(), r) || !r.matched) return;
+  applyPatient(r.patient, tr("from the handoff file"));
+}
+
+void MainWindow::applyPatient(const ta::PatientInfo& incoming, const QString& origin) {
   const ta::PatientInfo current = patientFromFields(nullptr);
-  const bool same = current.id == r.patient.id && current.familyName == r.patient.familyName &&
-                    current.givenName == r.patient.givenName;
-  const QString origin = tr("sent by the practice software (%1)").arg(q(t.name));
+  const bool same = current.id == incoming.id && current.familyName == incoming.familyName &&
+                    current.givenName == incoming.givenName;
   if (same) {
     patientOrigin_ = origin;
     return;
@@ -1016,12 +1130,10 @@ void MainWindow::applyHandoff(const QStringList& args, bool atStartup) {
   if (haveSession_ && !current.empty()) {
     int kept = 0;
     for (const auto& img : session_.images) kept += !img.discarded;
-    if (kept > 0 && !settleCurrentSession(tr("The practice software sent a different patient: %1.")
-                                              .arg(q(r.patient.displayName().empty() ? r.patient.id
-                                                                                     : r.patient.displayName()))))
-      return;
+    const QString who = q(incoming.displayName().empty() ? incoming.id : incoming.displayName());
+    if (kept > 0 && !settleCurrentSession(tr("The practice software sent a different patient: %1.").arg(who))) return;
   }
-  setPatientFields(r.patient);
+  setPatientFields(incoming);
   patientOrigin_ = origin;
   pushPatient();
   status(tr("Patient received from the practice software."));
@@ -1033,7 +1145,7 @@ void MainWindow::editOptions() {
   const bool rescan = d.options().simulatedSources != options_.simulatedSources || d.options().dsmPath != options_.dsmPath ||
                       d.options().sourceBits != options_.sourceBits || d.options().dsmLog != options_.dsmLog;
   options_ = d.options();
-  QSettings s;
+  QSettings& s = *settings_;
   s.setValue("simulatedSources", options_.simulatedSources);
   s.setValue("requirePatientId", options_.requirePatientId);
   s.setValue("disarmWhenFull", options_.disarmWhenFull);
@@ -1043,6 +1155,18 @@ void MainWindow::editOptions() {
   s.setValue("handoffPreset", options_.handoffPreset);
   s.setValue("handoffPattern", options_.handoffPattern);
   s.setValue("handoffDateFormat", options_.handoffDateFormat);
+  s.setValue("handoffFile/id", options_.fileId);
+  s.setValue("handoffFile/family", options_.fileFamily);
+  s.setValue("handoffFile/given", options_.fileGiven);
+  s.setValue("handoffFile/name", options_.fileName);
+  s.setValue("handoffFile/birth", options_.fileBirth);
+  s.setValue("handoffFile/sex", options_.fileSex);
+  s.setValue("handoffFile/accession", options_.fileAccession);
+  s.setValue("handoffFile/dateFormat", options_.fileDateFormat);
+  s.setValue("handoffFile/watch", options_.watchFile);
+  s.setValue("handoffFile/deleteAfterRead", options_.deleteFileAfterRead);
+  s.sync();
+  watchHandoffFile();
   if (rescan) scanSources();
 }
 

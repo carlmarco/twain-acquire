@@ -501,6 +501,44 @@ TEST("handoff: RayMage-style flags, case, = and :, missing values, SSN dropped")
   CHECK(convertDate("1980-13-31", "YYYY-MM-DD").empty());
 }
 
+TEST("handoff file: INI sections, case, comments, BOM, Windows-1252, name split, {file}") {
+  HandoffFileMapping m;
+  m.id = "Patient/PatNr";
+  m.name = "Name";
+  m.birth = "patient/geburtsdatum";
+  m.sex = "Sex";
+  m.dateFormat = "DD.MM.YYYY";
+  // Windows-1252: 0xE9 = é, 0x80 = euro sign; a UTF-8 BOM-less ANSI file.
+  std::string ansi = "; written by a practice program\r\n[Other]\r\nPatNr=999\r\n[PATIENT]\r\n  patnr = \"4711\"\r\n"
+                     "NAME=Ren\xE9 M\xFCller\r\nGeburtsdatum=31.01.1980\r\nSSN=123-45-6789\r\nSex=female\r\nnote=\x80\r\n";
+  const std::string text = decodeHandoffText(ansi);
+  CHECK(text.find("Ren\xC3\xA9") != std::string::npos);
+  CHECK(text.find("\xE2\x82\xAC") != std::string::npos);
+  auto r = parseHandoffFile(text, m);
+  CHECK(r.matched && r.patient.id == "4711");
+  CHECK(r.patient.familyName == "M\xC3\xBCller" && r.patient.givenName == "Ren\xC3\xA9");
+  CHECK(r.patient.birthDate == "19800131" && r.patient.sex == "F" && r.problems.empty());
+
+  HandoffFileMapping caret;
+  caret.name = "pn";
+  r = parseHandoffFile(decodeHandoffText("\xEF\xBB\xBFpn=Roe^Ann\n"), caret);
+  CHECK(r.patient.familyName == "Roe" && r.patient.givenName == "Ann");
+  caret.name = "pn";
+  r = parseHandoffFile("pn=Roe, Ann Marie\n", caret);
+  CHECK(r.patient.familyName == "Roe" && r.patient.givenName == "Ann Marie");
+  HandoffFileMapping none;
+  CHECK(!none.any() && !parseHandoffFile("id=1\n", none).matched);
+  CHECK(decodeHandoffText("plain") == "plain");
+  CHECK(decodeHandoffText("\xC3\xA9") == "\xC3\xA9");  // already UTF-8 stays as is
+
+  HandoffTemplate withFile{"f", "file", "/FILE {file} /PATID {id}", "YYYYMMDD"};
+  r = parseHandoff(withFile, {"/file", "C:\\temp\\patient.ini", "/PATID", "5"});
+  CHECK(r.file == "C:\\temp\\patient.ini" && r.patient.id == "5");
+  PatientInfo a{"", "Roe", "", "", "F", ""}, b{"9", "Other", "Ann", "19800131", "M", "A1"};
+  fillBlanks(a, b);
+  CHECK(a.id == "9" && a.familyName == "Roe" && a.givenName == "Ann" && a.sex == "F" && a.accession == "A1");
+}
+
 TEST("crc32: known value") { CHECK(crc32("123456789", 9) == 0xCBF43926u); }
 
 int main() { return check::runAll(); }

@@ -370,6 +370,50 @@ OptionsDialog::OptionsDialog(const AppOptions& o, const QString& dataDir, QWidge
   auto* hg = new QGroupBox(tr("Patient from the practice software"));
   hg->setLayout(hf);
   v->addWidget(hg);
+
+  // Handoff file: a key=value / INI file named by {file} in the arguments, or
+  // a fixed file the practice software rewrites for the current patient.
+  auto key = [](const QString& value) {
+    auto* e = new QLineEdit(value);
+    e->setPlaceholderText(tr("Key or Section/Key"));
+    return e;
+  };
+  fileId_ = key(o.fileId);
+  fileFamily_ = key(o.fileFamily);
+  fileGiven_ = key(o.fileGiven);
+  fileName_ = key(o.fileName);
+  fileName_->setToolTip(tr("Whole name in one value: \"Family, Given\" or \"Family^Given\"; "
+                           "otherwise the last word is the family name."));
+  fileBirth_ = key(o.fileBirth);
+  fileSex_ = key(o.fileSex);
+  fileAccession_ = key(o.fileAccession);
+  fileDate_ = combo({"YYYYMMDD", "YYYY-MM-DD", "MM/DD/YYYY", "DD.MM.YYYY", "DD/MM/YYYY"},
+                    {"YYYYMMDD", "YYYY-MM-DD", "MM/DD/YYYY", "DD.MM.YYYY", "DD/MM/YYYY"}, o.fileDateFormat);
+  watchFile_ = new QLineEdit(o.watchFile);
+  watchFile_->setPlaceholderText(tr("Optional: a file to watch for the current patient"));
+  auto* watchBrowse = new QPushButton(tr("Browse…"));
+  connect(watchBrowse, &QPushButton::clicked, this, [this] {
+    const QString f = QFileDialog::getOpenFileName(this, tr("Handoff file"), watchFile_->text());
+    if (!f.isEmpty()) watchFile_->setText(QDir::toNativeSeparators(f));
+  });
+  auto* watchRow = new QHBoxLayout;
+  watchRow->addWidget(watchFile_, 1);
+  watchRow->addWidget(watchBrowse);
+  deleteFile_ = check(tr("Delete the file after reading it"), o.deleteFileAfterRead);
+  auto* ff = new QFormLayout;
+  ff->addRow(tr("Patient ID"), fileId_);
+  ff->addRow(tr("Family name"), fileFamily_);
+  ff->addRow(tr("Given name"), fileGiven_);
+  ff->addRow(tr("Whole name"), fileName_);
+  ff->addRow(tr("Birth date"), fileBirth_);
+  ff->addRow(tr("Birth date format"), fileDate_);
+  ff->addRow(tr("Sex"), fileSex_);
+  ff->addRow(tr("Accession"), fileAccession_);
+  ff->addRow(tr("Watch file"), watchRow);
+  ff->addRow(deleteFile_);
+  auto* fg = new QGroupBox(tr("Handoff file"));
+  fg->setLayout(ff);
+  v->addWidget(fg);
   auto* where = new QLabel(tr("Data folder: %1").arg(dataDir));
   where->setTextInteractionFlags(Qt::TextSelectableByMouse);
   where->setWordWrap(true);
@@ -388,5 +432,15 @@ AppOptions OptionsDialog::options() const {
   o.handoffPreset = handoffPreset_->currentData().toString();
   o.handoffPattern = o.handoffPreset == "custom" ? handoffPattern_->text().trimmed() : QString();
   o.handoffDateFormat = handoffDate_->currentData().toString();
+  o.fileId = fileId_->text().trimmed();
+  o.fileFamily = fileFamily_->text().trimmed();
+  o.fileGiven = fileGiven_->text().trimmed();
+  o.fileName = fileName_->text().trimmed();
+  o.fileBirth = fileBirth_->text().trimmed();
+  o.fileSex = fileSex_->text().trimmed();
+  o.fileAccession = fileAccession_->text().trimmed();
+  o.fileDateFormat = fileDate_->currentData().toString();
+  o.watchFile = watchFile_->text().trimmed();
+  o.deleteFileAfterRead = deleteFile_->isChecked();
   return o;
 }
