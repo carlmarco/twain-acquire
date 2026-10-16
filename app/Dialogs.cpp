@@ -1,5 +1,7 @@
 #include "Dialogs.hpp"
 
+#include "handoff.hpp"
+
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDialogButtonBox>
@@ -17,6 +19,7 @@
 #include <QSpinBox>
 #include <QUuid>
 #include <QVBoxLayout>
+#include <memory>
 
 namespace {
 
@@ -327,6 +330,46 @@ OptionsDialog::OptionsDialog(const AppOptions& o, const QString& dataDir, QWidge
   v->addLayout(dsmRow);
   dsmLog_ = check(tr("Ask the TWAIN DSM to write a diagnostic log to the data folder"), o.dsmLog);
   v->addWidget(dsmLog_);
+
+  // Patient handoff: how the practice software passes the patient when it starts us.
+  QStringList presetNames;
+  QVariantList presetIds;
+  for (const auto& t : ta::handoffPresets()) {
+    presetNames << QString::fromStdString(t.name);
+    presetIds << QString::fromStdString(t.id);
+  }
+  presetNames << tr("Custom");
+  presetIds << QString("custom");
+  handoffPreset_ = combo(presetNames, presetIds, o.handoffPreset);
+  handoffPattern_ = new QLineEdit;
+  handoffPattern_->setToolTip(tr("Flags and placeholders, e.g. /PATID {id} /NAME {given} /SURNAME {family}\n"
+                                 "Placeholders: {id} {family} {given} {birth} {sex} {accession} {skip} {ssn}\n"
+                                 "{ssn} is accepted and always discarded."));
+  handoffDate_ = combo({"YYYYMMDD", "YYYY-MM-DD", "MM/DD/YYYY", "DD.MM.YYYY", "DD/MM/YYYY"},
+                       {"YYYYMMDD", "YYYY-MM-DD", "MM/DD/YYYY", "DD.MM.YYYY", "DD/MM/YYYY"}, o.handoffDateFormat);
+  // The custom text survives switching to a preset and back.
+  auto custom = std::make_shared<QString>(o.handoffPattern);
+  auto showPattern = [this, custom] {
+    const QString id = handoffPreset_->currentData().toString();
+    const bool isCustom = id == "custom";
+    handoffPattern_->setReadOnly(!isCustom);
+    if (isCustom) {
+      handoffPattern_->setText(*custom);
+      return;
+    }
+    for (const auto& t : ta::handoffPresets())
+      if (QString::fromStdString(t.id) == id) handoffPattern_->setText(QString::fromStdString(t.pattern));
+  };
+  connect(handoffPattern_, &QLineEdit::textEdited, this, [custom](const QString& t) { *custom = t; });
+  connect(handoffPreset_, &QComboBox::currentIndexChanged, this, showPattern);
+  showPattern();
+  auto* hf = new QFormLayout;
+  hf->addRow(tr("Format"), handoffPreset_);
+  hf->addRow(tr("Arguments"), handoffPattern_);
+  hf->addRow(tr("Birth date"), handoffDate_);
+  auto* hg = new QGroupBox(tr("Patient from the practice software"));
+  hg->setLayout(hf);
+  v->addWidget(hg);
   auto* where = new QLabel(tr("Data folder: %1").arg(dataDir));
   where->setTextInteractionFlags(Qt::TextSelectableByMouse);
   where->setWordWrap(true);
@@ -342,5 +385,8 @@ AppOptions OptionsDialog::options() const {
   o.dsmPath = dsmPath_->text().trimmed();
   o.sourceBits = sourceBits_->currentData().toInt();
   o.dsmLog = dsmLog_->isChecked();
+  o.handoffPreset = handoffPreset_->currentData().toString();
+  o.handoffPattern = o.handoffPreset == "custom" ? handoffPattern_->text().trimmed() : QString();
+  o.handoffDateFormat = handoffDate_->currentData().toString();
   return o;
 }

@@ -1,10 +1,11 @@
-find_package(Qt6 REQUIRED COMPONENTS Widgets)
+find_package(Qt6 REQUIRED COMPONENTS Widgets Network)
 set(CMAKE_AUTOMOC ON)
 
 # The parts with no widgets, shared with the tests.
-add_library(ta_appcore STATIC HelperClient.cpp Stager.cpp HelperClient.hpp Stager.hpp AppTypes.hpp)
+add_library(ta_appcore STATIC HelperClient.cpp Stager.cpp HandoffChannel.cpp
+  HelperClient.hpp Stager.hpp HandoffChannel.hpp AppTypes.hpp)
 target_include_directories(ta_appcore PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(ta_appcore PUBLIC ta_core Qt6::Core Qt6::Gui)
+target_link_libraries(ta_appcore PUBLIC ta_core Qt6::Core Qt6::Gui Qt6::Network)
 
 add_executable(twain_acquire WIN32
   main.cpp MainWindow.cpp ImageView.cpp MountView.cpp Dialogs.cpp

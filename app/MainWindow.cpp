@@ -26,6 +26,7 @@
 #include <algorithm>
 #include <system_error>
 
+#include "HandoffChannel.hpp"
 #include "ImageView.hpp"
 #include "MountView.hpp"
 #include "Stager.hpp"
@@ -85,9 +86,14 @@ MainWindow::MainWindow(const LaunchOptions& launch, QWidget* parent) : QMainWind
     disarm(tr("No exposure arrived within %1 s; the sensor was disarmed.").arg(profile_.armTimeoutMs / 1000));
   });
 
-  if (!launch.patient.empty()) setPatientFields(launch.patient);
+  handoff_ = new HandoffChannel(dataDir_, this);
+  connect(handoff_, &HandoffChannel::argumentsReceived, this,
+          [this](const QStringList& args) { applyHandoff(args, false); });
+  QString listenError;
+  if (!handoff_->listen(&listenError)) log("warn", tr("Patient handoff from other launches is unavailable: %1").arg(listenError));
   QTimer::singleShot(0, this, [this] {
     offerRecovery();
+    applyHandoff(launch_.args, true);
     scanSources();
   });
 }
@@ -108,6 +114,9 @@ void MainWindow::loadConfig() {
   options_.dsmPath = s.value("dsmPath").toString();
   options_.sourceBits = s.value("sourceBits", 32).toInt();
   options_.dsmLog = s.value("dsmLog", false).toBool();
+  options_.handoffPreset = s.value("handoffPreset", "twain-acquire").toString();
+  options_.handoffPattern = s.value("handoffPattern").toString();
+  options_.handoffDateFormat = s.value("handoffDateFormat", "YYYYMMDD").toString();
 
   std::vector<std::string> problems;
   layouts_ = ta::loadLayouts(layoutsDir_, &problems);
@@ -155,6 +164,10 @@ void MainWindow::buildUi() {
   for (QLineEdit* e : {patientId_, family_, given_, birth_})
     connect(e, &QLineEdit::editingFinished, this, &MainWindow::pushPatient);
   connect(sexBox_, &QComboBox::currentIndexChanged, this, &MainWindow::pushPatient);
+  // Any edit by hand makes the fields "typed", whatever filled them first.
+  for (QLineEdit* e : {patientId_, family_, given_, birth_})
+    connect(e, &QLineEdit::textEdited, this, [this] { patientOrigin_ = tr("typed"); });
+  connect(sexBox_, &QComboBox::activated, this, [this] { patientOrigin_ = tr("typed"); });
 
   auto* patientRow = new QHBoxLayout;
   patientRow->addWidget(new QLabel(tr("Patient ID")));
@@ -908,6 +921,7 @@ void MainWindow::exportSession() {
                      .arg(kept)
                      .arg(name, p.id.empty() ? tr("(none)") : q(p.id),
                           p.birthDate.empty() ? QString() : tr(", born %1").arg(birth_->text()), dests.join(", "));
+  if (!patientOrigin_.isEmpty()) text += "\n\n" + tr("Patient details: %1").arg(patientOrigin_);
   if (unplaced) text += "\n\n" + tr("%1 image(s) are not placed in a slot and will be exported last.").arg(unplaced);
   QMessageBox box(QMessageBox::Question, tr("Confirm export"), text, QMessageBox::NoButton, this);
   auto* go = box.addButton(tr("Export for %1").arg(name), QMessageBox::AcceptRole);
@@ -947,6 +961,72 @@ void MainWindow::refreshExportStatus() {
   retryButton_->setVisible(failed > 0);
 }
 
+ta::HandoffTemplate MainWindow::handoffTemplate() const {
+  for (const auto& t : ta::handoffPresets())
+    if (QString::fromStdString(t.id) == options_.handoffPreset) {
+      ta::HandoffTemplate out = t;
+      out.dateFormat = options_.handoffDateFormat.toStdString();
+      return out;
+    }
+  return {"custom", tr("custom format").toStdString(), options_.handoffPattern.toStdString(),
+          options_.handoffDateFormat.toStdString()};
+}
+
+void MainWindow::applyHandoff(const QStringList& args, bool atStartup) {
+  if (!atStartup) {
+    // Another launch: bring this window forward even if it carries no patient.
+    setWindowState((windowState() & ~Qt::WindowMinimized) | Qt::WindowActive);
+    raise();
+    activateWindow();
+  }
+  std::vector<std::string> a;
+  for (const QString& arg : args) a.push_back(arg.toStdString());
+  const ta::HandoffTemplate t = handoffTemplate();
+  ta::HandoffResult r = ta::parseHandoff(t, a);
+  if (t.id != "twain-acquire") {
+    // twain-acquire's own flags are always understood as well; the chosen format wins.
+    const ta::HandoffResult own = ta::parseHandoff(ta::handoffPresets().front(), a);
+    ta::PatientInfo& p = r.patient;
+    if (p.id.empty()) p.id = own.patient.id;
+    if (p.familyName.empty()) p.familyName = own.patient.familyName;
+    if (p.givenName.empty()) p.givenName = own.patient.givenName;
+    if (p.birthDate.empty()) p.birthDate = own.patient.birthDate;
+    if (p.sex.empty()) p.sex = own.patient.sex;
+    if (p.accession.empty()) p.accession = own.patient.accession;
+    r.matched = r.matched || own.matched;
+  }
+  for (const auto& problem : r.problems) log("warn", tr("Patient handoff: %1").arg(q(problem)));
+  if (!r.matched) return;
+
+  const ta::PatientInfo current = patientFromFields(nullptr);
+  const bool same = current.id == r.patient.id && current.familyName == r.patient.familyName &&
+                    current.givenName == r.patient.givenName;
+  const QString origin = tr("sent by the practice software (%1)").arg(q(t.name));
+  if (same) {
+    patientOrigin_ = origin;
+    return;
+  }
+  if (helperState_ == "armed" || helperState_ == "transferring") {
+    log("warn", tr("Patient handoff refused while the sensor is armed"));
+    QMessageBox::warning(this, tr("New patient"),
+                         tr("The practice software sent a different patient while the sensor is armed. It was not "
+                            "applied.\n\nFinish or disarm, then send the patient again."));
+    return;
+  }
+  if (haveSession_ && !current.empty()) {
+    int kept = 0;
+    for (const auto& img : session_.images) kept += !img.discarded;
+    if (kept > 0 && !settleCurrentSession(tr("The practice software sent a different patient: %1.")
+                                              .arg(q(r.patient.displayName().empty() ? r.patient.id
+                                                                                     : r.patient.displayName()))))
+      return;
+  }
+  setPatientFields(r.patient);
+  patientOrigin_ = origin;
+  pushPatient();
+  status(tr("Patient received from the practice software."));
+}
+
 void MainWindow::editOptions() {
   OptionsDialog d(options_, dataDir_, this);
   if (d.exec() != QDialog::Accepted) return;
@@ -960,6 +1040,9 @@ void MainWindow::editOptions() {
   s.setValue("dsmPath", options_.dsmPath);
   s.setValue("sourceBits", options_.sourceBits);
   s.setValue("dsmLog", options_.dsmLog);
+  s.setValue("handoffPreset", options_.handoffPreset);
+  s.setValue("handoffPattern", options_.handoffPattern);
+  s.setValue("handoffDateFormat", options_.handoffDateFormat);
   if (rescan) scanSources();
 }
 

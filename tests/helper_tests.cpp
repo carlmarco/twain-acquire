@@ -4,8 +4,11 @@
 #include <QElapsedTimer>
 #include <QEventLoop>
 #include <QTemporaryDir>
+#include <atomic>
 #include <functional>
+#include <thread>
 
+#include "HandoffChannel.hpp"
 #include "HelperClient.hpp"
 #include "Stager.hpp"
 #include "check.hpp"
@@ -199,6 +202,28 @@ TEST("stager: a received frame is on disk before it is reported") {
   CHECK(ta::StagingSession::readState(ta::fs::fromUtf8(sessionDir.toStdString()), disk));
   CHECK(disk.images.size() == 2 && disk.patient.familyName == "Roe");
   r.client.shutdown(3000);
+}
+
+TEST("handoff channel: a second launch's arguments reach the running instance") {
+  QTemporaryDir dir;
+  CHECK(!HandoffChannel::send(dir.path(), {"x"}, 300));  // nobody listening yet
+  HandoffChannel server(dir.path());
+  QString err;
+  CHECK(server.listen(&err));
+  QStringList got;
+  int received = 0;
+  QObject::connect(&server, &HandoffChannel::argumentsReceived, [&](QStringList a) {
+    got = a;
+    ++received;
+  });
+  const QStringList sent{"/PATID", "123 456", "/NAME", "Zoë", "/SURNAME", "O'Neil\tTab"};
+  std::atomic<int> ok{-1};
+  std::thread client([&] { ok = HandoffChannel::send(dir.path(), sent, 3000) ? 1 : 0; });
+  CHECK(waitFor([&] { return received == 1 && ok != -1; }, 5000));
+  client.join();
+  CHECK(ok == 1);
+  CHECK(got == sent);
+  CHECK(HandoffChannel::serverName(dir.path()) == HandoffChannel::serverName(dir.path() + "/"));
 }
 
 int main(int argc, char** argv) {

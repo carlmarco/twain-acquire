@@ -7,6 +7,24 @@ exports them as DICOM or TIFF to the imaging software that reviews them.
 It acquires and exports only. It contains no sensor driver and does no
 diagnostic image processing.
 
+## Patient from the practice software
+
+Practice software can start twain-acquire for the patient who is open. The
+arguments are read with a template set in Setup > Options, for example
+
+```
+/PATID {id} /NAME {given} /SURNAME {family}
+```
+
+Placeholders: `{id}` `{family}` `{given}` `{birth}` `{sex}` `{accession}` and
+`{skip}`. `{ssn}` is accepted and always discarded. twain-acquire's own flags
+(`--patient-id`, `--family`, `--given`, `--birth`, `--sex`, `--accession`) are
+always understood.
+
+When twain-acquire is already running, a new launch passes its patient to the
+open window and exits. A different patient never replaces one whose images are
+not yet exported without asking, and is refused while the sensor is armed.
+
 ## Safety
 
 - The armed state is shown to the operator for as long as a sensor is armed.

@@ -11,6 +11,7 @@
 #include "dicom.hpp"
 #include "export.hpp"
 #include "frame.hpp"
+#include "handoff.hpp"
 #include "fs.hpp"
 #include "kv.hpp"
 #include "layout.hpp"
@@ -471,6 +472,33 @@ TEST("layout and profile: files round-trip; next empty slot wraps") {
   CHECK(q.defaultOrientation == (Orientation{2, true}));
   CHECK(SourceProfile::pathFor(dir, p.source).filename() == "Vendor_X___Model_1.profile");
   std::filesystem::remove_all(dir);
+}
+
+TEST("handoff: RayMage-style flags, case, = and :, missing values, SSN dropped") {
+  const auto presets = handoffPresets();
+  const HandoffTemplate ray = presets[1];
+  auto r = parseHandoff(ray, {"/PATID", "123456", "/NAME", "John", "/SURNAME", "Smith"});
+  CHECK(r.matched && r.patient.id == "123456" && r.patient.givenName == "John" && r.patient.familyName == "Smith");
+  r = parseHandoff(ray, {"/patid=77", "/Surname:VanDyke", "unrelated", "-x"});
+  CHECK(r.patient.id == "77" && r.patient.familyName == "VanDyke" && r.patient.givenName.empty());
+  r = parseHandoff(ray, {"/PATID", "/NAME", "Ann"});  // ID flag with no value
+  CHECK(r.patient.id.empty() && r.patient.givenName == "Ann");
+  r = parseHandoff(ray, {"--simulate"});
+  CHECK(!r.matched);
+
+  HandoffTemplate own = presets[0];
+  r = parseHandoff(own, {"--patient-id", "9", "--birth", "19800131", "--sex", "female", "--accession", "A1"});
+  CHECK(r.patient.id == "9" && r.patient.birthDate == "19800131" && r.patient.sex == "F" && r.patient.accession == "A1");
+
+  HandoffTemplate custom{"c", "custom", "{id} {family} {given} {birth} {ssn} {sex}", "MM/DD/YYYY"};
+  r = parseHandoff(custom, {"55", "Roe", "Ann", "01/31/1980", "123-45-6789", "M"});
+  CHECK(r.patient.id == "55" && r.patient.familyName == "Roe" && r.patient.birthDate == "19800131" && r.patient.sex == "M");
+  CHECK(r.problems.empty());
+  r = parseHandoff(custom, {"55", "Roe", "Ann", "31/01/1980"});
+  CHECK(r.patient.birthDate.empty() && r.problems.size() == 1);
+  CHECK(convertDate("31.01.1980", "DD.MM.YYYY") == "19800131");
+  CHECK(convertDate("1980-01-31", "YYYY-MM-DD") == "19800131");
+  CHECK(convertDate("1980-13-31", "YYYY-MM-DD").empty());
 }
 
 TEST("crc32: known value") { CHECK(crc32("123456789", 9) == 0xCBF43926u); }

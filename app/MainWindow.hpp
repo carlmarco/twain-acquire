@@ -11,9 +11,11 @@
 #include "Dialogs.hpp"
 #include "HelperClient.hpp"
 #include "export.hpp"
+#include "handoff.hpp"
 #include "layout.hpp"
 #include "profile.hpp"
 
+class HandoffChannel;
 class ImageView;
 class MountView;
 class Stager;
@@ -26,7 +28,7 @@ class QPushButton;
 
 struct LaunchOptions {
   QString dataDir;
-  ta::PatientInfo patient;
+  QStringList args;  // the program's arguments, parsed for a patient handoff
   QString layout;
   QString source;
   bool simulate = false;
@@ -93,6 +95,10 @@ class MainWindow : public QMainWindow {
   bool lookupTarget(const std::string& id, ta::ExportTarget& out) const;
 
   void editOptions();
+
+  // patient handoff from practice software
+  ta::HandoffTemplate handoffTemplate() const;
+  void applyHandoff(const QStringList& args, bool atStartup);
   void log(const QString& level, const QString& text);
   void status(const QString& text);
   const ta::Layout& layout() const;
@@ -124,6 +130,8 @@ class MainWindow : public QMainWindow {
   QTimer exportTimer_;
 
   int viewedSeq_ = -1;
+  HandoffChannel* handoff_ = nullptr;
+  QString patientOrigin_;  // where the patient fields came from, shown before export
 
   // widgets
   QComboBox *sourceBox_ = nullptr, *layoutBox_ = nullptr, *sexBox_ = nullptr;

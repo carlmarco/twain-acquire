@@ -63,6 +63,9 @@ struct AppOptions {
   QString dsmPath;   // empty = the system TWAINDSM.dll
   int sourceBits = 32;  // which TWAIN sources to search: 32, 64, or 0 for both
   bool dsmLog = false;  // ask the DSM to write its own diagnostic log
+  QString handoffPreset = "twain-acquire";  // a preset id, or "custom"
+  QString handoffPattern;                    // used when the preset is "custom"
+  QString handoffDateFormat = "YYYYMMDD";
 };
 
 class OptionsDialog : public QDialog {
@@ -73,6 +76,7 @@ class OptionsDialog : public QDialog {
 
  private:
   QCheckBox *sim_, *requireId_, *disarmFull_, *dsmLog_;
-  QComboBox* sourceBits_;
+  QComboBox *sourceBits_, *handoffPreset_, *handoffDate_;
+  QLineEdit* handoffPattern_;
   QLineEdit* dsmPath_;
 };
