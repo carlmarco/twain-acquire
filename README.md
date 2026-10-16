@@ -13,6 +13,30 @@ diagnostic image processing.
 - A staged set is delivered only after the operator confirms it, once, before a
   short expiry. Anything doubtful delivers nothing.
 
+## Building
+
+Requires CMake 3.21+, a C99/C++17 compiler and Qt 6 (Widgets).
+
+```
+cmake -S . -B build -DCMAKE_PREFIX_PATH=<Qt prefix> -DTWAIN_INCLUDE_DIR=<dir with twain.h>
+cmake --build build
+ctest --test-dir build
+```
+
+The application runs TWAIN sources in a separate helper process, so its own
+bitness does not have to match the source's. On Windows, build the helper a
+second time for the other bitness and place it beside the application:
+
+```
+cmake -S . -B build32 -A Win32 -DTA_HELPER_ONLY=ON -DTWAIN_INCLUDE_DIR=<dir with twain.h>
+cmake --build build32 --config Release
+```
+
+This produces `ta-helper32.exe`; the 64-bit build produces `ta-helper64.exe`.
+Each helper loads the TWAIN Data Source Manager (`TWAINDSM.dll`) of its own
+bitness. Without `twain.h`, the helper is built with simulated sources only;
+run the application with `--simulate` to use them.
+
 ## License
 
 MIT. See `LICENSE`.

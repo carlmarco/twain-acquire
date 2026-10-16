@@ -1,0 +1,33 @@
+set(TA_HELPER_SOURCES helper_main.c sim.c loop_posix.c loop_win.c twain_win.c)
+
+if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+  set(TA_HELPER_BITS 64)
+else()
+  set(TA_HELPER_BITS 32)
+endif()
+
+if(WIN32)
+  set(TA_HELPER_NAME ta-helper${TA_HELPER_BITS})
+else()
+  set(TA_HELPER_NAME ta-helper)
+endif()
+
+add_executable(ta_helper ${TA_HELPER_SOURCES})
+set_target_properties(ta_helper PROPERTIES OUTPUT_NAME ${TA_HELPER_NAME})
+target_link_libraries(ta_helper PRIVATE ta_wire)
+
+if(WIN32)
+  # No console window when the application starts it.
+  set_target_properties(ta_helper PROPERTIES WIN32_EXECUTABLE ON)
+  if(MSVC)
+    target_link_options(ta_helper PRIVATE /ENTRY:mainCRTStartup)
+  endif()
+  target_link_libraries(ta_helper PRIVATE user32)
+  if(TWAIN_INCLUDE_DIR AND EXISTS "${TWAIN_INCLUDE_DIR}/twain.h")
+    target_include_directories(ta_helper PRIVATE ${TWAIN_INCLUDE_DIR})
+    target_compile_definitions(ta_helper PRIVATE TA_HAVE_TWAIN)
+    message(STATUS "TWAIN backend: twain.h at ${TWAIN_INCLUDE_DIR}")
+  else()
+    message(WARNING "twain.h not found; the helper is built with simulated sources only. Pass -DTWAIN_INCLUDE_DIR=...")
+  endif()
+endif()
