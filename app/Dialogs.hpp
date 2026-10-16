@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "export.hpp"
+#include "layout.hpp"
 #include "profile.hpp"
 
 class QCheckBox;
@@ -13,6 +14,7 @@ class QDoubleSpinBox;
 class QLineEdit;
 class QListWidget;
 class QSpinBox;
+class QTableWidget;
 
 // Every per-source setting. Defaults follow the source; change only what a
 // particular source gets wrong.
@@ -88,4 +90,21 @@ class OptionsDialog : public QDialog {
   QComboBox* fileDate_;
   QCheckBox* deleteFile_;
   QLineEdit* dsmPath_;
+};
+
+// How each slot of a mount turns the images placed in it, and whether the
+// whole mount is shown mirrored. Saved as a .layout file that replaces the
+// built-in one of the same id.
+class MountDialog : public QDialog {
+  Q_OBJECT
+ public:
+  MountDialog(const ta::Layout& layout, bool customised, QWidget* parent = nullptr);
+  ta::Layout layout() const;
+  bool restoreDefaults() const { return restore_; }
+
+ private:
+  ta::Layout base_;
+  QTableWidget* table_;
+  QCheckBox* mirror_;
+  bool restore_ = false;
 };

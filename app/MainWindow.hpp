@@ -27,6 +27,7 @@ class QLabel;
 class QLineEdit;
 class QPlainTextEdit;
 class QPushButton;
+class QSplitter;
 
 struct LaunchOptions {
   QString dataDir;
@@ -97,6 +98,8 @@ class MainWindow : public QMainWindow {
   bool lookupTarget(const std::string& id, ta::ExportTarget& out) const;
 
   void editOptions();
+  void editMount();
+  void reloadLayouts();
 
   // patient handoff from practice software
   ta::HandoffTemplate handoffTemplate() const;
@@ -155,5 +158,6 @@ class MainWindow : public QMainWindow {
   QPushButton* retryButton_ = nullptr;
   MountView* mount_ = nullptr;
   ImageView* view_ = nullptr;
+  QSplitter* split_ = nullptr;
   QPlainTextEdit* logView_ = nullptr;
 };

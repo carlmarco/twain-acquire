@@ -257,6 +257,10 @@ void MainWindow::buildUi() {
   controlRow->addSpacing(16);
   controlRow->addWidget(new QLabel(tr("Layout")));
   controlRow->addWidget(layoutBox_);
+  auto* mountSettings = new QPushButton(tr("Mount…"));
+  mountSettings->setToolTip(tr("Rotation and mirroring for each slot of this mount"));
+  connect(mountSettings, &QPushButton::clicked, this, &MainWindow::editMount);
+  controlRow->addWidget(mountSettings);
   controlRow->addSpacing(16);
   controlRow->addWidget(armButton_);
   controlRow->addWidget(exportButton);
@@ -283,11 +287,15 @@ void MainWindow::buildUi() {
     QMetaObject::invokeMethod(stager_, "place", Qt::QueuedConnection, Q_ARG(uint, seq), Q_ARG(int, slot));
   });
   connect(mount_, &MountView::contextRequested, this, &MainWindow::showImageMenu);
-  auto* split = new QSplitter;
+  // The mount is the working area; the viewer beside it shows the selected
+  // image. Drag the divider to change the split; it is remembered.
+  auto* split = split_ = new QSplitter;
   split->addWidget(mount_);
   split->addWidget(view_);
-  split->setStretchFactor(0, 2);
-  split->setStretchFactor(1, 3);
+  split->setStretchFactor(0, 3);
+  split->setStretchFactor(1, 2);
+  split->setSizes({780, 500});
+  split->restoreState(settings_->value("ui/splitter").toByteArray());
 
   auto* central = new QWidget;
   auto* v = new QVBoxLayout(central);
@@ -317,6 +325,7 @@ void MainWindow::buildUi() {
   auto* setup = menuBar()->addMenu(tr("Se&tup"));
   setup->addAction(tr("Export &destinations…"), this, &MainWindow::editTargets);
   setup->addAction(tr("&Source settings…"), this, &MainWindow::editProfile);
+  setup->addAction(tr("&Mount settings…"), this, &MainWindow::editMount);
   setup->addAction(tr("&Options…"), this, &MainWindow::editOptions);
 
   logView_ = new QPlainTextEdit;
@@ -1139,6 +1148,37 @@ void MainWindow::applyPatient(const ta::PatientInfo& incoming, const QString& or
   status(tr("Patient received from the practice software."));
 }
 
+void MainWindow::reloadLayouts() {
+  const QString current = layoutBox_->currentData().toString();
+  std::vector<std::string> problems;
+  layouts_ = ta::loadLayouts(layoutsDir_, &problems);
+  for (const auto& p : problems) log("warn", tr("Layout ignored: %1").arg(q(p)));
+  const QSignalBlocker block(layoutBox_);
+  layoutBox_->clear();
+  for (const auto& l : layouts_) layoutBox_->addItem(q(l.name), q(l.id));
+  const int at = layoutBox_->findData(current);
+  layoutBox_->setCurrentIndex(at < 0 ? 0 : at);
+  mount_->setLayout(layout());
+}
+
+void MainWindow::editMount() {
+  const ta::Layout& l = layout();
+  const ta::fs::Path file = layoutsDir_ / ta::fs::fromUtf8(l.id + ".layout");
+  MountDialog d(l, std::filesystem::exists(file), this);
+  if (d.exec() != QDialog::Accepted) return;
+  std::string err;
+  if (d.restoreDefaults()) {
+    std::error_code ec;
+    std::filesystem::remove(file, ec);
+    if (ec) err = ec.message();
+  } else if (!d.layout().toKv().save(file, &err)) {
+    // falls through to the warning below
+  }
+  if (!err.empty()) QMessageBox::warning(this, tr("Mount settings"), q(err));
+  reloadLayouts();
+  status(tr("Mount settings saved for %1.").arg(q(l.name)));
+}
+
 void MainWindow::editOptions() {
   OptionsDialog d(options_, dataDir_, this);
   if (d.exec() != QDialog::Accepted) return;
@@ -1178,6 +1218,8 @@ void MainWindow::closeEvent(QCloseEvent* e) {
     }
   }
   if (helper_) helper_->shutdown(kShutdownMs);
+  settings_->setValue("ui/splitter", split_->saveState());
+  settings_->sync();
   // An unexported session stays on disk and is offered at the next start.
   e->accept();
 }

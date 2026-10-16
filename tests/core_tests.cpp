@@ -447,6 +447,16 @@ TEST("layout and profile: files round-trip; next empty slot wraps") {
     Layout back;
     CHECK(Layout::fromKv(l.toKv(), back) && back.slotList.size() == l.slotList.size());
   }
+  const auto builtins = builtinLayouts();
+  CHECK(builtins.size() == 6);
+  CHECK(builtins[4].id == "bw4-pa2" && builtins[4].slotList.size() == 6 && builtins[4].slotList[4].label == "Periapical 1");
+  CHECK(builtins[5].id == "pa4-bw2" && builtins[5].slotList.size() == 6 && builtins[5].slotList[5].label == "Bitewing 2");
+  Layout mirroredCopy = builtins[4];
+  mirroredCopy.mirrored = true;
+  mirroredCopy.slotList[0].orientation = {2, true};
+  Layout back;
+  CHECK(Layout::fromKv(mirroredCopy.toKv(), back) && back.mirrored && back.slotList[0].orientation == (Orientation{2, true}));
+  CHECK(back.displayColumn(back.slotList[0]) == 3 && builtins[4].displayColumn(builtins[4].slotList[0]) == 0);
   const Layout fmx = builtinLayouts()[3];
   CHECK(fmx.slotList.size() == 18);
   std::vector<bool> filled(18, false);

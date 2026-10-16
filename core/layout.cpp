@@ -62,6 +62,7 @@ Kv Layout::toKv() const {
   kv.set("id", id);
   kv.set("name", name);
   kv.setInt("columns", columns);
+  kv.setBool("mirror", mirrored);
   kv.setInt("rows", rows);
   for (size_t i = 0; i < slotList.size(); ++i) {
     const LayoutSlot& s = slotList[i];
@@ -80,6 +81,7 @@ bool Layout::fromKv(const Kv& kv, Layout& out, std::string* err) {
   out.name = kv.str("name", out.id);
   out.columns = int(std::clamp<int64_t>(kv.integer("columns", 1), 1, 32));
   out.rows = int(std::clamp<int64_t>(kv.integer("rows", 1), 1, 32));
+  out.mirrored = kv.boolean("mirror", false);
   for (int i = 1; i <= 256; ++i) {
     const std::string key = "slot." + std::to_string(i);
     auto v = kv.get(key);
@@ -135,6 +137,18 @@ std::vector<Layout> builtinLayouts() {
   for (int i = 0; i < 4; ++i) fmx.slotList.push_back(slot(bite[i], biteCols[i], 1));
   for (int i = 0; i < 7; ++i) fmx.slotList.push_back(slot(lower[i], i, 2));
   out.push_back(fmx);
+
+  // Mixed sets. Bitewings and periapicals are numbered, not named, so the
+  // operator decides which teeth each one covers.
+  Layout bw4pa2{"bw4-pa2", "4 bitewings + 2 periapicals", 4, 2, {}};
+  for (int i = 0; i < 4; ++i) bw4pa2.slotList.push_back(slot(("Bitewing " + std::to_string(i + 1)).c_str(), i, 0));
+  for (int i = 0; i < 2; ++i) bw4pa2.slotList.push_back(slot(("Periapical " + std::to_string(i + 1)).c_str(), i + 1, 1));
+  out.push_back(bw4pa2);
+
+  Layout pa4bw2{"pa4-bw2", "4 periapicals + 2 bitewings", 4, 2, {}};
+  for (int i = 0; i < 4; ++i) pa4bw2.slotList.push_back(slot(("Periapical " + std::to_string(i + 1)).c_str(), i, 0));
+  for (int i = 0; i < 2; ++i) pa4bw2.slotList.push_back(slot(("Bitewing " + std::to_string(i + 1)).c_str(), i + 1, 1));
+  out.push_back(pa4bw2);
 
   return out;
 }

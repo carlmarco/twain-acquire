@@ -79,7 +79,7 @@ std::vector<MountView::Cell> MountView::cells() const {
   for (size_t i = 0; i < layout_.slotList.size(); ++i) {
     const auto& s = layout_.slotList[i];
     Cell c;
-    c.rect = QRect(grid.left() + s.column * (cw + kGap), grid.top() + s.row * (ch + kGap), cw, ch);
+    c.rect = QRect(grid.left() + layout_.displayColumn(s) * (cw + kGap), grid.top() + s.row * (ch + kGap), cw, ch);
     c.slot = int(i);
     c.seq = imageInSlot(int(i));
     c.label = QString::fromStdString(s.label);

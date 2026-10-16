@@ -26,9 +26,12 @@ struct Layout {
   int columns = 1;
   int rows = 1;
   std::vector<LayoutSlot> slotList;
+  bool mirrored = false;  // show columns right-to-left (the other viewing convention)
 
   // Index of the first slot after `from` (wrapping) not in `filled`, or -1.
   int nextEmpty(int from, const std::vector<bool>& filled) const;
+  // Column a slot is drawn in, after mirroring.
+  int displayColumn(const LayoutSlot& s) const { return mirrored ? columns - 1 - s.column : s.column; }
 
   Kv toKv() const;
   static bool fromKv(const Kv& kv, Layout& out, std::string* err = nullptr);

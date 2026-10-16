@@ -17,6 +17,8 @@
 #include <QMessageBox>
 #include <QPushButton>
 #include <QSpinBox>
+#include <QHeaderView>
+#include <QTableWidget>
 #include <QUuid>
 #include <QVBoxLayout>
 #include <memory>
@@ -443,4 +445,63 @@ AppOptions OptionsDialog::options() const {
   o.watchFile = watchFile_->text().trimmed();
   o.deleteFileAfterRead = deleteFile_->isChecked();
   return o;
+}
+
+// ---- MountDialog ----------------------------------------------------------
+
+MountDialog::MountDialog(const ta::Layout& layout, bool customised, QWidget* parent)
+    : QDialog(parent), base_(layout) {
+  setWindowTitle(tr("Mount settings: %1").arg(QString::fromStdString(layout.name)));
+  table_ = new QTableWidget(int(layout.slotList.size()), 3);
+  table_->setHorizontalHeaderLabels({tr("Slot"), tr("Rotation"), tr("Mirror")});
+  table_->verticalHeader()->hide();
+  table_->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
+  table_->setSelectionMode(QAbstractItemView::NoSelection);
+  for (int i = 0; i < int(layout.slotList.size()); ++i) {
+    const auto& slot = layout.slotList[size_t(i)];
+    auto* label = new QTableWidgetItem(QString::fromStdString(slot.label));
+    label->setFlags(Qt::ItemIsEnabled);
+    table_->setItem(i, 0, label);
+    table_->setCellWidget(i, 1, combo({tr("None"), tr("90° clockwise"), tr("180°"), tr("90° anticlockwise")},
+                                      {0, 1, 2, 3}, slot.orientation.quarterTurns));
+    auto* mirror = new QTableWidgetItem;
+    mirror->setFlags(Qt::ItemIsEnabled | Qt::ItemIsUserCheckable);
+    mirror->setCheckState(slot.orientation.flipH ? Qt::Checked : Qt::Unchecked);
+    table_->setItem(i, 2, mirror);
+  }
+  table_->resizeColumnsToContents();
+  table_->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
+
+  mirror_ = check(tr("Mirror the mount (show the right side of the mouth on the right)"), layout.mirrored);
+  auto* note = new QLabel(tr("Rotation and mirroring apply to images taken into a slot from now on, on top of the "
+                             "source's default. Images already taken keep theirs; turn them with the Image menu."));
+  note->setWordWrap(true);
+
+  auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
+  auto* restore = buttons->addButton(tr("Restore defaults"), QDialogButtonBox::ResetRole);
+  restore->setEnabled(customised);
+  connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept);
+  connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
+  connect(restore, &QPushButton::clicked, this, [this] {
+    restore_ = true;
+    accept();
+  });
+
+  auto* v = new QVBoxLayout(this);
+  v->addWidget(table_, 1);
+  v->addWidget(mirror_);
+  v->addWidget(note);
+  v->addWidget(buttons);
+  resize(520, 460);
+}
+
+ta::Layout MountDialog::layout() const {
+  ta::Layout l = base_;
+  l.mirrored = mirror_->isChecked();
+  for (int i = 0; i < int(l.slotList.size()); ++i) {
+    auto* turns = qobject_cast<QComboBox*>(table_->cellWidget(i, 1));
+    l.slotList[size_t(i)].orientation.quarterTurns = turns ? turns->currentData().toInt() : 0;
+    l.slotList[size_t(i)].orientation.flipH = table_->item(i, 2)->checkState() == Qt::Checked;
+  }
+  return l;
 }

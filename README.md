@@ -71,6 +71,15 @@ Each helper loads the TWAIN Data Source Manager (`TWAINDSM.dll`) of its own
 bitness. Without `twain.h`, the helper is built with simulated sources only;
 run the application with `--simulate` to use them.
 
+## Mounts
+
+Built-in mounts: single image, 2 and 4 bitewings, an 18-image full mouth
+series, 4 bitewings + 2 periapicals, and 4 periapicals + 2 bitewings. Setup >
+Mount settings sets the rotation and mirroring applied to images taken into
+each slot, and can mirror the whole mount. The changes are saved as a
+`.layout` file in the data folder, which replaces the built-in mount of the
+same id; Restore defaults removes it.
+
 ## Settings
 
 Settings, export destinations, source profiles and layouts are plain text files
