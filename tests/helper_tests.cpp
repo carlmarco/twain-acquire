@@ -270,24 +270,36 @@ TEST("stager: an image that cannot be written is kept in memory, in order, until
   CHECK(waitFor([&] { return r.frames.size() == 2; }, 5000));
   r.client.shutdown(3000);
 
-  // No permission to write: both images are held, nothing is lost.
-  QFile::setPermissions(sessionDir, QFileDevice::ReadOwner | QFileDevice::ExeOwner);
+  // The session folder becomes unwritable. A read-only attribute does not stop
+  // writes into a folder on Windows, so the folder is moved aside and a plain
+  // file put at its path: every write into it then fails on any platform.
+  const QString aside = sessionDir + ".aside";
+  auto breakFolder = [&] {
+    CHECK(QDir().rename(sessionDir, aside));
+    QFile blocker(sessionDir);
+    CHECK(blocker.open(QIODevice::WriteOnly));
+  };
+  auto mendFolder = [&] {
+    CHECK(QFile::remove(sessionDir));
+    CHECK(QDir().rename(aside, sessionDir));
+  };
+  breakFolder();
   s.addFrame(r.frames.value(0), {}, {}, 0);
   s.addFrame(r.frames.value(1), {}, {}, -1);
   CHECK(staged == 0 && held == 2 && !reason.isEmpty());
 
   // Fixed: retry stages both, in order.
-  QFile::setPermissions(sessionDir, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
+  mendFolder();
   s.retryPending();
   CHECK(staged == 2 && cleared == 1);
 
   // Or saved somewhere else when the session folder stays unwritable.
-  QFile::setPermissions(sessionDir, QFileDevice::ReadOwner | QFileDevice::ExeOwner);
+  breakFolder();
   s.addFrame(r.frames.value(0), {}, {}, 0);
   CHECK(held == 1);
   s.savePendingTo(elsewhere.path());
   CHECK(cleared == 2 && QDir(elsewhere.path()).entryList({"unsaved-*.tif"}).size() == 1);
-  QFile::setPermissions(sessionDir, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
+  mendFolder();
 }
 
 TEST("helper: retire returns at once and the helper ends and frees itself") {
