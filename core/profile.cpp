@@ -61,7 +61,7 @@ Kv SourceProfile::toKv() const {
   kv.setBool("show-ui", showUI);
   kv.setBool("modal-ui", modalUI);
   kv.setInt("transfer-count", transferCount);
-  kv.setBool("disarm-after-each-image", disarmAfterEachImage);
+  kv.set("after-batch", afterBatch == AfterBatch::Disarm ? "disarm" : afterBatch == AfterBatch::Stay ? "stay" : "rearm");
   kv.set("byte-order", byteOrderName(normalize.byteOrder));
   kv.set("polarity", polarityName(normalize.polarity));
   kv.setInt("bits-stored", normalize.bitsStored);
@@ -85,7 +85,8 @@ SourceProfile SourceProfile::fromKv(const Kv& kv) {
   p.showUI = kv.boolean("show-ui", false);
   p.modalUI = kv.boolean("modal-ui", false);
   p.transferCount = int(kv.integer("transfer-count", -1));
-  p.disarmAfterEachImage = kv.boolean("disarm-after-each-image", false);
+  const std::string ab = kv.str("after-batch", kv.boolean("disarm-after-each-image", false) ? "disarm" : "rearm");
+  p.afterBatch = ab == "disarm" ? AfterBatch::Disarm : ab == "stay" ? AfterBatch::Stay : AfterBatch::Rearm;
   const std::string bo = kv.str("byte-order", "auto");
   p.normalize.byteOrder = bo == "little" ? NormalizeOptions::ByteOrder::Little
                           : bo == "big"  ? NormalizeOptions::ByteOrder::Big

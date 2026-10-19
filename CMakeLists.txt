@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(twain-acquire VERSION 0.6.1 LANGUAGES C CXX)
+project(twain-acquire VERSION 0.7.0 LANGUAGES C CXX)
 
 set(CMAKE_C_STANDARD 99)
 set(CMAKE_CXX_STANDARD 17)

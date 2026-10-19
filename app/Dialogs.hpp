@@ -27,7 +27,8 @@ class ProfileDialog : public QDialog {
  private:
   ta::SourceProfile base_;
   QComboBox *helperBits_, *transfer_, *bitDepth_, *byteOrder_, *polarity_, *turns_;
-  QCheckBox *showUI_, *modalUI_, *disarmEach_, *invert_, *flip_, *autoAdvance_;
+  QCheckBox *showUI_, *modalUI_, *invert_, *flip_, *autoAdvance_;
+  QComboBox* afterBatch_;
   QSpinBox *count_, *bitsStored_, *callTimeout_, *armTimeout_;
   QDoubleSpinBox* dpi_;
 };

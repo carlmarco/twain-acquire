@@ -74,6 +74,8 @@ class MainWindow : public QMainWindow {
   void onHelperDied(const QString& why);
   void onFrame(const QByteArray& payload);
   void onImageStaged(uint seq, int slot);
+  void onBatchEnd();
+  std::vector<bool> occupiedSlots() const;
   void updateBanner();
 
   // session
@@ -134,6 +136,8 @@ class MainWindow : public QMainWindow {
   bool armAfterOpen_ = false;
   bool helperReady_ = false;  // HELLO received from the current helper
   bool armAfterSession_ = false;  // arming waits for the session being started
+  bool rearmAfterDisarm_ = false;  // after-batch re-arm: enable again once disarmed
+  std::vector<int> reservedSlots_;  // slots given to frames not yet saved
   bool exportInFlight_ = false;
   int unsaved_ = 0;              // images held in memory because they could not be saved
   bool stateUnknown_ = false;

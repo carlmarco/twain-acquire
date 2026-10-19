@@ -30,6 +30,12 @@ struct Layout {
 
   // Index of the first slot after `from` (wrapping) not in `filled`, or -1.
   int nextEmpty(int from, const std::vector<bool>& filled) const;
+
+  // A frame has arrived. It goes to `target` (-1 = unplaced), and the target
+  // moves to the next slot not `occupied` (saved or already given to an
+  // earlier frame still being saved), or -1 when the mount is full. Returns
+  // {slot for this frame, next target}.
+  std::pair<int, int> assignFrame(int target, std::vector<bool> occupied, bool autoAdvance) const;
   // Column a slot is drawn in, after mirroring.
   int displayColumn(const LayoutSlot& s) const { return mirrored ? columns - 1 - s.column : s.column; }
 

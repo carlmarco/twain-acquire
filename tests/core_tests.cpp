@@ -655,6 +655,22 @@ TEST("handoff file: INI sections, case, comments, BOM, Windows-1252, name split,
   CHECK(a.id == "9" && a.familyName == "Roe" && a.givenName == "Ann" && a.sex == "F" && a.accession == "A1");
 }
 
+TEST("mount: a burst of frames fills consecutive slots before any is saved") {
+  const Layout bw2 = builtinLayouts()[1];
+  std::vector<bool> reserved(2, false);
+  // Two frames arrive back to back; nothing has been saved yet.
+  auto [a, next1] = bw2.assignFrame(0, reserved, true);
+  reserved[size_t(a)] = true;
+  auto [b, next2] = bw2.assignFrame(next1, reserved, true);
+  CHECK(a == 0 && b == 1 && next1 == 1 && next2 == -1);
+  // A third frame finds the mount full and stays unplaced instead of replacing slot 2.
+  CHECK(bw2.assignFrame(next2, {true, true}, true) == std::make_pair(-1, -1));
+  // A deliberate retake into a filled slot keeps that slot, then moves on.
+  CHECK(bw2.assignFrame(0, {true, false}, true) == std::make_pair(0, 1));
+  // Without auto-advance the target stays.
+  CHECK(bw2.assignFrame(1, {false, false}, false) == std::make_pair(1, 1));
+}
+
 TEST("crc32: known value") { CHECK(crc32("123456789", 9) == 0xCBF43926u); }
 
 int main() { return check::runAll(); }

@@ -57,6 +57,14 @@ int Layout::nextEmpty(int from, const std::vector<bool>& filled) const {
   return -1;
 }
 
+std::pair<int, int> Layout::assignFrame(int target, std::vector<bool> occupied, bool autoAdvance) const {
+  if (target < 0 || target >= int(slotList.size())) return {-1, -1};
+  if (!autoAdvance) return {target, target};
+  occupied.resize(slotList.size(), false);
+  occupied[size_t(target)] = true;
+  return {target, nextEmpty(target, occupied)};
+}
+
 Kv Layout::toKv() const {
   Kv kv;
   kv.set("id", id);

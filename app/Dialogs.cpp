@@ -71,7 +71,9 @@ ProfileDialog::ProfileDialog(const ta::SourceProfile& p, QWidget* parent) : QDia
   showUI_ = check(tr("Show the source's own window"), p.showUI);
   modalUI_ = check(tr("Source window is modal"), p.modalUI);
   count_ = spin(-1, 99, p.transferCount, tr("As many as offered"));
-  disarmEach_ = check(tr("Disarm after each image"), p.disarmAfterEachImage);
+  using AB = ta::SourceProfile::AfterBatch;
+  afterBatch_ = combo({tr("Re-arm for the next empty slot"), tr("Disarm"), tr("Stay armed")},
+                      {int(AB::Rearm), int(AB::Disarm), int(AB::Stay)}, int(p.afterBatch));
 
   byteOrder_ = combo({tr("As reported"), tr("Little-endian"), tr("Big-endian")},
                      {int(B::Auto), int(B::Little), int(B::Big)}, int(p.normalize.byteOrder));
@@ -103,7 +105,7 @@ ProfileDialog::ProfileDialog(const ta::SourceProfile& p, QWidget* parent) : QDia
   neg->addRow(tr("Images per arming"), count_);
   neg->addRow(showUI_);
   neg->addRow(modalUI_);
-  neg->addRow(disarmEach_);
+  neg->addRow(tr("After each batch"), afterBatch_);
   auto* g1 = new QGroupBox(tr("Negotiation"));
   g1->setLayout(neg);
 
@@ -140,7 +142,7 @@ ta::SourceProfile ProfileDialog::profile() const {
   p.showUI = showUI_->isChecked();
   p.modalUI = modalUI_->isChecked();
   p.transferCount = count_->value();
-  p.disarmAfterEachImage = disarmEach_->isChecked();
+  p.afterBatch = ta::SourceProfile::AfterBatch(afterBatch_->currentData().toInt());
   p.normalize.byteOrder = ta::NormalizeOptions::ByteOrder(byteOrder_->currentData().toInt());
   p.normalize.polarity = ta::NormalizeOptions::Polarity(polarity_->currentData().toInt());
   p.normalize.bitsStored = bitsStored_->value() >= 8 ? bitsStored_->value() : 0;

@@ -92,7 +92,7 @@ TEST("helper: list, open, arm, receive, auto-disarm, close, exit") {
   CHECK(r.start());
   r.client.list(3000);
   CHECK(waitFor([&] { return r.listed; }, 5000));
-  CHECK(r.sources.size() == 5);
+  CHECK(r.sources.size() == 6);
   CHECK(r.sources.value(0).name == "Simulated sensor" && r.sources.value(0).backend == "sim");
 
   CHECK(r.open("Simulated sensor"));
@@ -107,6 +107,21 @@ TEST("helper: list, open, arm, receive, auto-disarm, close, exit") {
   r.client.shutdown(3000);
   CHECK(!r.client.isRunning());
   CHECK(r.died.isEmpty() && r.errors.isEmpty());
+}
+
+TEST("helper: a series source sends its images in one burst, then reports the batch and stays enabled") {
+  Recorder r;
+  QStringList reasons;
+  QObject::connect(&r.client, &HelperClient::stateChanged, [&](QString s, QString reason) { reasons << s + ":" + reason; });
+  CHECK(r.start());
+  CHECK(r.open("Simulated sensor (series of 2 in one batch)", -1));
+  r.client.enable(3000);
+  CHECK(waitFor([&] { return reasons.contains("armed:batch"); }, 5000));
+  CHECK(r.frames.size() == 2);                         // both arrived before the batch ended
+  CHECK(r.client.state() == "armed");                  // still enabled: the host must disable it
+  r.client.disable(3000);
+  CHECK(waitFor([&] { return r.client.state() == "open"; }, 3000));
+  r.client.shutdown(3000);
 }
 
 TEST("helper: requests in the wrong state are refused and change nothing") {

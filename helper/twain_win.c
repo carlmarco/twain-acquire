@@ -780,7 +780,9 @@ static void do_transfers(void) {
     }
   } while (pending.Count != 0);
   /* Still enabled (state 5): the source may raise another exposure. */
-  if (g.enabled) ta_send_state(TA_STATE_ARMED, NULL);
+  /* Back in state 5 with nothing pending: the source waits for the
+     application to disable it, or for another exposure. Say which this is. */
+  if (g.enabled) ta_send_state(TA_STATE_ARMED, "batch");
 }
 
 static void on_ds_message(TW_UINT16 msg) {

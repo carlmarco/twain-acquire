@@ -84,6 +84,7 @@ MainWindow::MainWindow(const LaunchOptions& launch, QWidget* parent) : QMainWind
   connect(stager_, &Stager::stagingFailed, this, &MainWindow::onStagingFailed);
   connect(stager_, &Stager::pendingCleared, this, [this] {
     unsaved_ = 0;
+    reservedSlots_.clear();
     updateBanner();
     status(tr("Held images are resolved."));
   });
@@ -651,7 +652,10 @@ void MainWindow::openSource() {
 // ---- arming ----------------------------------------------------------------
 
 void MainWindow::toggleArm() {
-  if (helperState_ == "armed" || helperState_ == "transferring") disarm(tr("Disarmed."));
+  if (helperState_ == "armed" || helperState_ == "transferring") {
+    rearmAfterDisarm_ = false;
+    disarm(tr("Disarmed."));
+  }
   else arm();
 }
 
@@ -689,12 +693,25 @@ void MainWindow::arm() {
 void MainWindow::disarm(const QString& why) {
   armTimer_.stop();
   armAfterOpen_ = false;
+  if (!why.isEmpty()) rearmAfterDisarm_ = false;  // a deliberate disarm ends any re-arm cycle
   if (helper_ && helper_->isRunning()) helper_->disable(profile_.callTimeoutMs);
   if (!why.isEmpty()) status(why);
 }
 
 void MainWindow::onHelperState(const QString& state, const QString& reason) {
   helperState_ = state;
+  if (state == "armed" && reason == "batch") {
+    if (profile_.armTimeoutMs > 0) armTimer_.start(profile_.armTimeoutMs);
+    updateBanner();
+    onBatchEnd();
+    return;
+  }
+  if (state == "open" && rearmAfterDisarm_) {
+    rearmAfterDisarm_ = false;
+    updateBanner();
+    if (helper_) helper_->enable(profile_.callTimeoutMs);
+    return;
+  }
   if (state == "armed") {
     if (profile_.armTimeoutMs > 0) armTimer_.start(profile_.armTimeoutMs);
   } else if (state != "transferring") {
@@ -708,6 +725,8 @@ void MainWindow::onHelperDied(const QString& why) {
   const bool wasLive = helperState_ != "closed";
   helperState_ = "closed";
   armAfterOpen_ = false;
+  rearmAfterDisarm_ = false;
+  reservedSlots_.clear();
   armTimer_.stop();
   stateUnknown_ = wasLive;
   log("error", why);
@@ -719,9 +738,23 @@ void MainWindow::onHelperDied(const QString& why) {
                                      : QString()));
 }
 
+// Slots are assigned here, as each frame arrives, not when it has been saved:
+// a source that sends a series in one burst delivers the second frame before
+// the first is on disk. Each assigned slot is reserved until it is saved.
+std::vector<bool> MainWindow::occupiedSlots() const {
+  std::vector<bool> filled = mount_->filledSlots();
+  for (int s : reservedSlots_)
+    if (s >= 0 && s < int(filled.size())) filled[size_t(s)] = true;
+  return filled;
+}
+
 void MainWindow::onFrame(const QByteArray& payload) {
   if (profile_.armTimeoutMs > 0 && helperState_ == "armed") armTimer_.start(profile_.armTimeoutMs);
-  const int slot = mount_->targetSlot();
+  // Move on now. A full mount leaves no target: further frames are kept unplaced
+  // rather than replacing the last slot.
+  const auto [slot, next] = layout().assignFrame(mount_->targetSlot(), occupiedSlots(), profile_.autoAdvance);
+  if (slot >= 0) reservedSlots_.push_back(slot);
+  mount_->setTargetSlot(next);
   ta::Orientation o = profile_.defaultOrientation;
   if (slot >= 0 && slot < int(layout().slotList.size())) {
     const auto& so = layout().slotList[size_t(slot)].orientation;
@@ -736,13 +769,31 @@ void MainWindow::onFrame(const QByteArray& payload) {
 void MainWindow::onImageStaged(uint seq, int slot) {
   viewedSeq_ = int(seq);
   mount_->setSelectedImage(int(seq));
-  const auto filled = mount_->filledSlots();
-  int next = slot;
-  if (profile_.autoAdvance && slot >= 0) next = layout().nextEmpty(slot, filled);
-  if (next >= 0) mount_->setTargetSlot(next);
-  const bool armed = helperState_ == "armed" || helperState_ == "transferring";
-  if (armed && profile_.disarmAfterEachImage) disarm(tr("Image received; disarmed."));
-  else if (armed && next < 0 && options_.disarmWhenFull) disarm(tr("Every slot is filled; the sensor was disarmed."));
+  const auto it = std::find(reservedSlots_.begin(), reservedSlots_.end(), slot);
+  if (it != reservedSlots_.end()) reservedSlots_.erase(it);
+}
+
+// The source has delivered what it had and waits, still enabled.
+void MainWindow::onBatchEnd() {
+  const auto occupied = occupiedSlots();
+  const bool full = !occupied.empty() && std::all_of(occupied.begin(), occupied.end(), [](bool b) { return b; });
+  if (full && options_.disarmWhenFull) {
+    disarm(tr("Every slot is filled; the sensor was disarmed."));
+    return;
+  }
+  switch (profile_.afterBatch) {
+    case ta::SourceProfile::AfterBatch::Disarm:
+      disarm(tr("Images received; disarmed."));
+      break;
+    case ta::SourceProfile::AfterBatch::Rearm:
+      // Close and reopen the source for the next slot, as a series in the
+      // practice software would.
+      rearmAfterDisarm_ = true;
+      disarm(QString());
+      break;
+    case ta::SourceProfile::AfterBatch::Stay:
+      break;
+  }
 }
 
 void MainWindow::updateBanner() {
@@ -953,6 +1004,7 @@ void MainWindow::editTargets() {
 void MainWindow::onStagingFailed(int count, const QString& reason) {
   unsaved_ = count;
   // Prevent more exposures piling up behind one that cannot be saved.
+  rearmAfterDisarm_ = false;
   if (helperState_ == "armed" || helperState_ == "transferring") disarm(QString());
   updateBanner();
   log("error", tr("%1 image(s) could not be saved: %2").arg(count).arg(reason));

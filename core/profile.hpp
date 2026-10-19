@@ -21,7 +21,10 @@ struct SourceProfile {
   bool showUI = false;   // let the source show its own window
   bool modalUI = false;
   int transferCount = -1;  // CAP_XFERCOUNT; -1 = as many as the source offers
-  bool disarmAfterEachImage = false;
+  // When the source has delivered a batch and waits, still enabled:
+  // re-arm for the next empty slot (closes and reopens the source), disarm,
+  // or stay armed for more exposures.
+  enum class AfterBatch { Rearm, Disarm, Stay } afterBatch = AfterBatch::Rearm;
 
   // Normalisation
   NormalizeOptions normalize;

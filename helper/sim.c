@@ -25,7 +25,7 @@ static uint64_t now_ms(void) {
 static void sleep_ms(unsigned ms) { usleep(ms * 1000u); }
 #endif
 
-enum { SIM_NORMAL, SIM_HANG_ON_ARM, SIM_CRASH_ON_TRANSFER, SIM_EIGHT_BIT, SIM_INVERTED_BE };
+enum { SIM_NORMAL, SIM_HANG_ON_ARM, SIM_CRASH_ON_TRANSFER, SIM_EIGHT_BIT, SIM_INVERTED_BE, SIM_SERIES };
 
 static const char *const k_names[] = {
     "Simulated sensor",
@@ -33,6 +33,7 @@ static const char *const k_names[] = {
     "Simulated sensor (crashes during transfer)",
     "Simulated sensor (8-bit only)",
     "Simulated sensor (big-endian, min-is-white)",
+    "Simulated sensor (series of 2 in one batch)",
 };
 
 typedef struct {
@@ -202,6 +203,15 @@ static int sim_tick(ta_backend *b) {
   if (!g_sim.due) return -1;
   now = now_ms();
   if (now < g_sim.due) return (int)(g_sim.due - now);
+  if (g_sim.kind == SIM_SERIES) {
+    /* Like a source that collects a series itself: every image in one burst,
+       then it waits, still enabled, for the application to disable it. */
+    deliver();
+    deliver();
+    g_sim.due = 0;
+    ta_send_state(TA_STATE_ARMED, "batch");
+    return -1;
+  }
   deliver();
   if (g_sim.count > 0 && g_sim.delivered >= g_sim.count) {
     /* Like a TWAIN source with no pending transfers left. */
@@ -210,7 +220,7 @@ static int sim_tick(ta_backend *b) {
     return -1;
   }
   g_sim.due = now_ms() + (uint64_t)g_sim.interval_ms;
-  ta_send_state(TA_STATE_ARMED, NULL);
+  ta_send_state(TA_STATE_ARMED, "batch"); /* each simulated exposure is a batch of one */
   return g_sim.interval_ms;
 }
 
