@@ -36,8 +36,7 @@ not yet exported without asking, and is refused while the sensor is armed.
 ## Safety
 
 - The armed state is shown to the operator for as long as a sensor is armed.
-- A staged set is delivered only after the operator confirms it, once, before a
-  short expiry. Anything doubtful delivers nothing.
+- Images are exported only after the operator confirms the patient, every time.
 
 ## Building
 
