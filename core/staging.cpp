@@ -274,6 +274,7 @@ bool StagingSession::addImage(const Frame& f, int slot, uint32_t* seqOut, std::s
   char name[32];
   std::snprintf(name, sizeof name, "%04u.tif", seq);
   const std::vector<uint8_t> bytes = encodeTiff(f, 16);
+  if (bytes.empty()) return fail(err, "image is too large to stage (over the 4 GB TIFF limit)");
   if (!fs::atomicWrite(dir_ / name, bytes.data(), bytes.size(), err)) return false;
   const uint32_t crc = crc32(bytes.data(), bytes.size());
   if (!record("image", {{"seq", std::to_string(seq)},

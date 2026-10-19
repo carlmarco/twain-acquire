@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstring>
@@ -243,6 +244,8 @@ TEST("tiff: 16- and 8-bit round trip, resolution kept, compression refused") {
   std::string why;
   CHECK(!decodeTiff(bad.data(), bad.size(), x, nullptr, &why));
   CHECK(!decodeTiff(t16.data(), 20, x, nullptr, &why));
+  CHECK(tiffFits(4000, 3000, 16) && tiffFits(65535, 65535, 8) && !tiffFits(65535, 65535, 16));
+  CHECK(tiffFits(46000, 46000, 16) && !tiffFits(47000, 47000, 16));
 }
 
 TEST("render: 1:1 is the LUT, orientation matches, shrinking averages") {
@@ -411,7 +414,8 @@ TEST("export: jobs survive restart, outputs written, collisions refused") {
     CHECK(q.enqueueSession(s->dir(), s->state(), layout, {dcm, tif}, &err) == 4);
   }
   // A new queue object (as after a restart) finds the jobs on disk.
-  ExportQueue q(root, lookup);
+  auto qp = std::make_shared<ExportQueue>(root, lookup);
+  ExportQueue& q = *qp;
   const auto waiting = q.snapshot();
   CHECK(waiting.size() == 4);
   q.start();
@@ -445,7 +449,8 @@ TEST("export: jobs survive restart, outputs written, collisions refused") {
   // A destination that disappears fails after the allowed attempts.
   targets.erase("dcm");
   std::string e2;
-  ExportQueue q2(root, lookup);
+  auto q2p = std::make_shared<ExportQueue>(root, lookup);
+  ExportQueue& q2 = *q2p;
   q2.maxAttempts = 1;
   auto s2 = StagingSession::create(root, "single", "Sim", PatientInfo{}, &e2);
   s2->addImage(pattern(8, 8), 0);
@@ -454,6 +459,40 @@ TEST("export: jobs survive restart, outputs written, collisions refused") {
   for (int i = 0; i < 200 && q2.counts().failed == 0; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(10));
   q2.stop();
   CHECK(q2.counts().failed == 1 && !q2.counts().lastError.empty());
+  std::filesystem::remove_all(root);
+}
+
+TEST("export: stopping never waits on a write that hangs") {
+  const fs::Path root = tempDir("hang");
+  std::string err;
+  auto s = StagingSession::create(root, "single", "Sim", PatientInfo{"1", "A", "", "", "", ""}, &err);
+  s->addImage(pattern(8, 8), 0);
+  ExportTarget t;
+  t.id = "slow";
+  t.folder = root / "out";
+  // The lookup stands in for a write on an unreachable network folder.
+  auto release = std::make_shared<std::atomic<bool>>(false);
+  auto entered = std::make_shared<std::atomic<bool>>(false);
+  auto q = std::make_shared<ExportQueue>(root, [release, entered, t](const std::string&, ExportTarget& out) {
+    *entered = true;
+    while (!*release) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    out = t;
+    return true;
+  });
+  CHECK(q->enqueueSession(s->dir(), s->state(), builtinLayouts()[0], {t}, &err) == 1);
+  q->start();
+  for (int i = 0; i < 300 && !*entered; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  CHECK(*entered);
+  const auto t0 = std::chrono::steady_clock::now();
+  CHECK(!q->stop(200));  // returns although the worker is still inside the write
+  const auto waited = std::chrono::steady_clock::now() - t0;
+  CHECK(waited < std::chrono::milliseconds(1000));
+  std::weak_ptr<ExportQueue> alive = q;
+  q.reset();  // the owner lets go; the detached worker keeps the queue alive
+  CHECK(!alive.expired());
+  *release = true;
+  for (int i = 0; i < 300 && !alive.expired(); ++i) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  CHECK(alive.expired());  // and frees it when the write returns
   std::filesystem::remove_all(root);
 }
 

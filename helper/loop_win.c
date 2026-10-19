@@ -50,6 +50,9 @@ static DWORD WINAPI reader(LPVOID arg) {
     req->data[hdr.length] = 0;
     while (!PostThreadMessageW(g_main_thread, WM_TA_REQUEST, 0, (LPARAM)req)) Sleep(1);
   }
+  /* The application has gone: the main thread disarms and exits, and if a
+     source has it stuck, the watchdog ends the process anyway. */
+  ta_arm_exit_watchdog();
   PostThreadMessageW(g_main_thread, WM_TA_EOF, 0, 0);
   return 0;
 }

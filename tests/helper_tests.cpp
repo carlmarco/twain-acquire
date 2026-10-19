@@ -1,8 +1,13 @@
 // Drives the real helper process (simulated backend) through HelperClient.
 
 #include <QCoreApplication>
+#include <QDir>
 #include <QElapsedTimer>
+#include <QFile>
 #include <QEventLoop>
+#include <QPointer>
+#include <QProcess>
+#include <QThread>
 #include <QTemporaryDir>
 #include <atomic>
 #include <functional>
@@ -13,6 +18,7 @@
 #include "Stager.hpp"
 #include "check.hpp"
 #include "normalize.hpp"
+#include "ta_wire.h"
 
 namespace {
 
@@ -202,6 +208,101 @@ TEST("stager: a received frame is on disk before it is reported") {
   CHECK(ta::StagingSession::readState(ta::fs::fromUtf8(sessionDir.toStdString()), disk));
   CHECK(disk.images.size() == 2 && disk.patient.familyName == "Roe");
   r.client.shutdown(3000);
+}
+
+namespace {
+void writeMessage(QProcess& p, uint32_t type, const QByteArray& payload = {}) {
+  uint8_t h[TA_WIRE_HEADER_SIZE];
+  ta_wire_put_header(h, type, uint32_t(payload.size()));
+  p.write(reinterpret_cast<const char*>(h), sizeof h);
+  p.write(payload);
+}
+}  // namespace
+
+TEST("helper: exits by itself once the application has gone, even when a source hangs") {
+  // A source stuck inside a call: closing stdin cannot be acted on by the main
+  // thread, so the watchdog must end the process after the grace period.
+  QProcess stuck;
+  stuck.start(TA_HELPER_PATH, {"--backend", "sim", "--exit-grace-ms", "500"});
+  CHECK(stuck.waitForStarted(3000));
+  writeMessage(stuck, TA_MSG_OPEN, "source=Simulated sensor (hangs when armed)\n");
+  writeMessage(stuck, TA_MSG_ENABLE);
+  stuck.waitForBytesWritten(1000);
+  QThread::msleep(200);
+  QElapsedTimer t;
+  t.start();
+  stuck.closeWriteChannel();
+  CHECK(stuck.waitForFinished(5000));
+  CHECK(t.elapsed() >= 400 && t.elapsed() < 3000);
+  CHECK(stuck.exitCode() == 3);
+
+  // Not stuck: the helper disarms, closes and exits at once, normally.
+  QProcess idle;
+  idle.start(TA_HELPER_PATH, {"--backend", "sim", "--exit-grace-ms", "5000"});
+  CHECK(idle.waitForStarted(3000));
+  writeMessage(idle, TA_MSG_OPEN, "source=Simulated sensor\n");
+  writeMessage(idle, TA_MSG_ENABLE);
+  idle.waitForBytesWritten(1000);
+  QThread::msleep(200);
+  t.restart();
+  idle.closeWriteChannel();
+  CHECK(idle.waitForFinished(3000));
+  CHECK(t.elapsed() < 1500 && idle.exitCode() == 0);
+}
+
+TEST("stager: an image that cannot be written is kept in memory, in order, until resolved") {
+  QTemporaryDir dir, elsewhere;
+  Stager s(dir.path());
+  QString sessionDir;
+  int staged = 0, cleared = 0, held = 0;
+  QString reason;
+  QObject::connect(&s, &Stager::sessionChanged, [&](ta::SessionState, QString d) { sessionDir = d; });
+  QObject::connect(&s, &Stager::imageStaged, [&](uint, int) { ++staged; });
+  QObject::connect(&s, &Stager::stagingFailed, [&](int n, QString r) {
+    held = n;
+    reason = r;
+  });
+  QObject::connect(&s, &Stager::pendingCleared, [&] { ++cleared; });
+  s.startSession("single", "Sim", ta::PatientInfo{});
+  Recorder r;
+  CHECK(r.start() && r.open("Simulated sensor", 2));
+  r.client.enable(3000);
+  CHECK(waitFor([&] { return r.frames.size() == 2; }, 5000));
+  r.client.shutdown(3000);
+
+  // No permission to write: both images are held, nothing is lost.
+  QFile::setPermissions(sessionDir, QFileDevice::ReadOwner | QFileDevice::ExeOwner);
+  s.addFrame(r.frames.value(0), {}, {}, 0);
+  s.addFrame(r.frames.value(1), {}, {}, -1);
+  CHECK(staged == 0 && held == 2 && !reason.isEmpty());
+
+  // Fixed: retry stages both, in order.
+  QFile::setPermissions(sessionDir, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
+  s.retryPending();
+  CHECK(staged == 2 && cleared == 1);
+
+  // Or saved somewhere else when the session folder stays unwritable.
+  QFile::setPermissions(sessionDir, QFileDevice::ReadOwner | QFileDevice::ExeOwner);
+  s.addFrame(r.frames.value(0), {}, {}, 0);
+  CHECK(held == 1);
+  s.savePendingTo(elsewhere.path());
+  CHECK(cleared == 2 && QDir(elsewhere.path()).entryList({"unsaved-*.tif"}).size() == 1);
+  QFile::setPermissions(sessionDir, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
+}
+
+TEST("helper: retire returns at once and the helper ends and frees itself") {
+  auto* h = new HelperClient;
+  bool hello = false;
+  QObject::connect(h, &HelperClient::hello, [&] { hello = true; });
+  h->start(TA_HELPER_PATH, "sim");
+  CHECK(waitFor([&] { return hello; }, 5000));
+  QPointer<HelperClient> alive(h);
+  QElapsedTimer t;
+  t.start();
+  h->disconnect();
+  h->retire(2000);
+  CHECK(t.elapsed() < 100);  // no waiting on the caller's thread
+  CHECK(waitFor([&] { return alive.isNull(); }, 4000));
 }
 
 TEST("handoff channel: a second launch's arguments reach the running instance") {

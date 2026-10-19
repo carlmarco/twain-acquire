@@ -15,6 +15,10 @@ endif()
 add_executable(ta_helper ${TA_HELPER_SOURCES})
 set_target_properties(ta_helper PROPERTIES OUTPUT_NAME ${TA_HELPER_NAME})
 target_link_libraries(ta_helper PRIVATE ta_wire)
+if(NOT WIN32)
+  find_package(Threads REQUIRED)
+  target_link_libraries(ta_helper PRIVATE Threads::Threads)
+endif()
 
 if(WIN32)
   # No console window when the application starts it.

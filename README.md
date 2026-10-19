@@ -86,6 +86,18 @@ Settings, export destinations, source profiles and layouts are plain text files
 in the data folder (`--data-dir`, or the per-user application data folder), so a
 configured office can be copied to another PC.
 
+## Reliability
+
+- An image that cannot be written (disk full, no permission) is held in
+  memory and the window refuses to arm or close until it is retried, saved
+  to another folder or discarded.
+- The PC is kept from sleeping while the sensor is armed.
+- If the application ends unexpectedly, the acquisition helper disarms and
+  exits on its own, and is ended after a short grace period if a source is
+  stuck.
+- An export stuck on an unreachable network folder does not keep the program
+  from closing; the job is retried at the next start.
+
 ## Patient data on this PC
 
 Staged images and patient details stay in the data folder until exported.

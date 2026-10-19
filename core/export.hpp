@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -67,7 +68,11 @@ struct ExportJob {
 // A durable queue of export jobs, processed by one background thread. Jobs are
 // files under <root>/queue, so a crash or restart loses none; a job is only
 // marked done after its output file has been completely written.
-class ExportQueue {
+//
+// Own it with std::shared_ptr: the worker holds a reference too, so a write
+// stuck on an unreachable network folder can be left behind at shutdown
+// without the queue being destroyed under it.
+class ExportQueue : public std::enable_shared_from_this<ExportQueue> {
  public:
   using TargetLookup = std::function<bool(const std::string& id, ExportTarget& out)>;
 
@@ -79,7 +84,9 @@ class ExportQueue {
                      const std::vector<ExportTarget>& targets, std::string* err = nullptr);
 
   void start();
-  void stop();
+  // Ask the worker to stop and wait up to `timeoutMs`. Returns false when it
+  // is still inside a write; it is then detached and ends on its own.
+  bool stop(int timeoutMs = 3000);
   void retryFailed();
 
   // Jobs still waiting or failed. Finished jobs leave memory: their files
@@ -104,8 +111,9 @@ class ExportQueue {
   // of sessions and job files removed.
   int purgeNow();
 
-  // Called on the worker thread after any job changes state.
-  std::function<void()> onChanged;
+  // Called on the worker thread after any job changes state. Clear it (set an
+  // empty function) before whatever it refers to is destroyed.
+  void setOnChanged(std::function<void()> fn);
 
   int maxAttempts = 8;
 
@@ -124,6 +132,8 @@ class ExportQueue {
   std::map<std::string, ExportJob> jobs_;
   std::thread worker_;
   bool stopping_ = false;
+  bool finished_ = true;  // the worker has left run()
+  std::function<void()> onChanged_;
   uint64_t doneSinceStart_ = 0;
   int retentionDays_ = 0;
   int64_t lastPurgeMs_ = 0;

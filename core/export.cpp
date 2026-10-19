@@ -177,7 +177,13 @@ ExportQueue::ExportQueue(fs::Path root, TargetLookup targets)
   loadAll();
 }
 
-ExportQueue::~ExportQueue() { stop(); }
+ExportQueue::~ExportQueue() {
+  // The last owner can be the worker itself, ending after a detached stop.
+  if (worker_.joinable()) {
+    if (worker_.get_id() == std::this_thread::get_id()) worker_.detach();
+    else stop();
+  }
+}
 
 void ExportQueue::loadAll() {
   std::error_code ec;
@@ -348,6 +354,7 @@ bool ExportQueue::perform(ExportJob& job, std::string* err) {
     }
   }
 
+  if (bytes.empty()) return fail(err, "image is too large for this export format");
   std::error_code ec;
   std::filesystem::create_directories(target.folder, ec);
   const fs::Path dest = target.folder / fs::fromUtf8(job.outName);
@@ -365,16 +372,37 @@ void ExportQueue::start() {
   std::lock_guard<std::mutex> lock(mu_);
   if (worker_.joinable()) return;
   stopping_ = false;
-  worker_ = std::thread([this] { run(); });
+  finished_ = false;
+  worker_ = std::thread([self = shared_from_this()] {
+    self->run();
+    {
+      std::lock_guard<std::mutex> l(self->mu_);
+      self->finished_ = true;
+    }
+    self->cv_.notify_all();
+  });
 }
 
-void ExportQueue::stop() {
-  {
-    std::lock_guard<std::mutex> lock(mu_);
-    stopping_ = true;
-  }
+bool ExportQueue::stop(int timeoutMs) {
+  std::unique_lock<std::mutex> lock(mu_);
+  if (!worker_.joinable()) return true;
+  stopping_ = true;
   cv_.notify_all();
-  if (worker_.joinable()) worker_.join();
+  const bool done = cv_.wait_for(lock, std::chrono::milliseconds(timeoutMs), [this] { return finished_; });
+  lock.unlock();
+  if (done) {
+    worker_.join();
+    return true;
+  }
+  // Still inside a write (e.g. an unreachable network folder). Leave it: the
+  // worker keeps this queue alive and ends when the write returns.
+  worker_.detach();
+  return false;
+}
+
+void ExportQueue::setOnChanged(std::function<void()> fn) {
+  std::lock_guard<std::mutex> lock(mu_);
+  onChanged_ = std::move(fn);
 }
 
 void ExportQueue::retryFailed() {
@@ -498,7 +526,7 @@ void ExportQueue::run() {
       persist(j, nullptr);
       jobs_.erase(job.id);
       ++doneSinceStart_;
-      auto notify = onChanged;
+      auto notify = onChanged_;
       lock.unlock();
       if (notify) notify();
       lock.lock();
@@ -514,7 +542,7 @@ void ExportQueue::run() {
       }
     }
     persist(j, nullptr);
-    auto notify = onChanged;
+    auto notify = onChanged_;
     lock.unlock();
     if (notify) notify();
     lock.lock();

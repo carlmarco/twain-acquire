@@ -41,7 +41,12 @@ class HelperClient : public QObject {
   void disable(int timeoutMs);
   void close(int timeoutMs);
   // Disarm, close and exit; killed if it does not exit within the timeout.
+  // Waits, so use it only when the program is closing.
   void shutdown(int timeoutMs);
+  // The same without waiting: the helper is asked to quit, killed after the
+  // timeout, and this object deletes itself once the process has ended.
+  // Disconnect from its signals first.
+  void retire(int timeoutMs);
   // How long one image transfer may take before the helper is stopped.
   void setTransferTimeout(int ms) { transferTimeoutMs_ = ms; }
 

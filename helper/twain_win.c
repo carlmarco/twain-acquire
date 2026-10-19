@@ -539,7 +539,7 @@ static void send_raw(uint32_t w, uint32_t h, uint32_t bps, uint32_t row_bytes, u
   fi.dpi_y_milli = (uint32_t)(dpiy * 1000.0 + 0.5);
   fi.index = g.index++;
   ta_frame_info_put(info, &fi);
-  ta_send2(TA_MSG_FRAME, info, sizeof info, data, row_bytes * h);
+  ta_send_frame(info, data, (uint64_t)row_bytes * h);
 }
 
 /* Reduce 24-bit RGB rows to one 8-bit channel in place (green). */
@@ -746,7 +746,7 @@ static int xfer_file(void) {
       fi.container = TA_FRAME_TIFF;
       fi.index = g.index++;
       ta_frame_info_put(info, &fi);
-      ta_send2(TA_MSG_FRAME, info, sizeof info, data, got);
+      ta_send_frame(info, data, got);
       ok = 1;
     }
     free(data);

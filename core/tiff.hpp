@@ -16,7 +16,10 @@ struct TiffMeta {
 };
 
 // Uncompressed single-strip greyscale TIFF, little-endian, 8 or 16 bits.
+// Returns an empty vector when the image would not fit a classic TIFF
+// (offsets are 32-bit, so about 4 GB): callers must treat that as a failure.
 std::vector<uint8_t> encodeTiff(const Frame& f, int outBits, const TiffMeta& meta = {});
+bool tiffFits(uint32_t width, uint32_t height, int outBits);
 
 struct TiffInfo {
   bool minIsWhite = false;

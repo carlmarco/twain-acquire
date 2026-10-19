@@ -4,6 +4,9 @@
 #include <vector>
 
 #include "render.hpp"
+#include "tiff.hpp"
+
+#include <cstdio>
 
 void registerAppTypes() {
   qRegisterMetaType<ta::Kv>();
@@ -60,10 +63,6 @@ void Stager::makeThumbnail(uint seq, const ta::Frame& f, const ta::Orientation& 
 }
 
 void Stager::addFrame(QByteArray payload, ta::NormalizeOptions options, ta::Orientation orientation, int slot) {
-  if (!session_) {
-    emit problem(tr("An image arrived with no session open; it was not kept."));
-    return;
-  }
   ta::Frame f;
   std::string err;
   if (!ta::normalizeTransfer(reinterpret_cast<const uint8_t*>(payload.constData()), size_t(payload.size()),
@@ -72,19 +71,67 @@ void Stager::addFrame(QByteArray payload, ta::NormalizeOptions options, ta::Orie
     return;
   }
   f.acquiredUnixMs = ta::fs::nowUnixMs();
-  uint32_t seq = 0;
-  if (!session_->addImage(f, slot, &seq, &err)) {
-    emit problem(tr("An image could not be saved: %1").arg(QString::fromStdString(err)));
-    return;
+  Pending p{std::move(f), orientation, slot};
+  // Later images queue behind an unsaved one, so order is kept.
+  if (!pending_.empty() || !stage(p, &err)) {
+    if (err.empty()) err = tr("an earlier image is still unsaved").toStdString();
+    pending_.push_back(std::move(p));
+    emit stagingFailed(int(pending_.size()), QString::fromStdString(err));
   }
-  if (!(orientation == ta::Orientation{})) session_->setOrientation(seq, orientation, &err);
+}
+
+bool Stager::stage(Pending& p, std::string* err) {
+  if (!session_) {
+    if (err) *err = tr("no session is open").toStdString();
+    return false;
+  }
+  uint32_t seq = 0;
+  if (!session_->addImage(p.frame, p.slot, &seq, err)) return false;
+  std::string ignored;
+  if (!(p.orientation == ta::Orientation{})) session_->setOrientation(seq, p.orientation, &ignored);
   // A retake into a filled slot keeps the earlier image, unplaced.
   for (const auto& img : session_->state().images)
-    if (slot >= 0 && img.slot == slot && img.seq != seq && !img.discarded) session_->place(img.seq, -1, &err);
-  makeThumbnail(seq, f, orientation);
+    if (p.slot >= 0 && img.slot == p.slot && img.seq != seq && !img.discarded) session_->place(img.seq, -1, &ignored);
+  makeThumbnail(seq, p.frame, p.orientation);
   emitState();
-  emit imageStaged(seq, slot);
-  emit imageLoaded(seq, std::make_shared<const ta::Frame>(std::move(f)));
+  emit imageStaged(seq, p.slot);
+  emit imageLoaded(seq, std::make_shared<const ta::Frame>(std::move(p.frame)));
+  return true;
+}
+
+void Stager::retryPending() {
+  std::string err;
+  while (!pending_.empty()) {
+    if (!stage(pending_.front(), &err)) {
+      emit stagingFailed(int(pending_.size()), QString::fromStdString(err));
+      return;
+    }
+    pending_.erase(pending_.begin());
+  }
+  emit pendingCleared();
+}
+
+void Stager::savePendingTo(QString dir) {
+  const ta::fs::Path out = ta::fs::fromUtf8(dir.toStdString());
+  int n = 0;
+  while (!pending_.empty()) {
+    const Pending& p = pending_.front();
+    const std::vector<uint8_t> bytes = ta::encodeTiff(p.frame, 16);
+    char name[64];
+    std::snprintf(name, sizeof name, "unsaved-%lld-%d.tif", static_cast<long long>(p.frame.acquiredUnixMs), ++n);
+    std::string err;
+    if (bytes.empty() || !ta::fs::atomicWrite(out / name, bytes.data(), bytes.size(), &err)) {
+      emit stagingFailed(int(pending_.size()), QString::fromStdString(err.empty() ? "image too large" : err));
+      return;
+    }
+    pending_.erase(pending_.begin());
+  }
+  emit pendingCleared();
+}
+
+void Stager::discardPending() {
+  pending_.clear();
+  emit pendingCleared();
 }
 
 void Stager::place(uint seq, int slot) {

@@ -68,6 +68,14 @@ ta_backend *ta_twain_backend(const char *dsm_path);
 /* Request dispatch, shared by the platform loops. Returns 0 to stop. */
 int ta_dispatch(ta_backend *b, uint32_t type, const uint8_t *payload, uint32_t length);
 
+/* Once the application has gone, the helper must not outlive it: a source
+   stuck in a call would otherwise keep the sensor. Starts (once) a timer that
+   ends the process after the grace period set by --exit-grace-ms. */
+void ta_arm_exit_watchdog(void);
+
+/* Send a FRAME, or refuse it loudly when it exceeds the protocol limit. */
+int ta_send_frame(const uint8_t info[TA_FRAME_INFO_SIZE], const void *data, uint64_t length);
+
 /* Platform loop. Returns the process exit code. */
 int ta_run_loop(ta_backend *b);
 

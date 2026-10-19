@@ -9,7 +9,9 @@
 #include <QDir>
 #include <QDockWidget>
 #include <QFile>
+#include <QFileDialog>
 #include <QFileInfo>
+#include <QPointer>
 #include <QFileSystemWatcher>
 #include <QCryptographicHash>
 #include <QHBoxLayout>
@@ -79,17 +81,27 @@ MainWindow::MainWindow(const LaunchOptions& launch, QWidget* parent) : QMainWind
     const ta::StagedImage* img = session_.image(seq);
     view_->setImage(frame, img ? img->orientation : ta::Orientation{});
   });
+  connect(stager_, &Stager::stagingFailed, this, &MainWindow::onStagingFailed);
+  connect(stager_, &Stager::pendingCleared, this, [this] {
+    unsaved_ = 0;
+    updateBanner();
+    status(tr("Held images are resolved."));
+  });
   connect(stager_, &Stager::problem, this, [this](const QString& text) {
+    armAfterSession_ = false;
     log("error", text);
     QMessageBox::warning(this, tr("Staging"), text);
   });
   stagerThread_.setObjectName("stager");
-  stagerThread_.start(QThread::LowPriority);
+  // Normal priority: this thread writes every exposure to disk.
+  stagerThread_.start(QThread::NormalPriority);
 
-  queue_ = std::make_unique<ta::ExportQueue>(root, [this](const std::string& id, ta::ExportTarget& out) {
-    return lookupTarget(id, out);
+  // The lookup copies the folder path rather than referring to this window:
+  // the export worker can outlive the window when a write hangs at shutdown.
+  queue_ = std::make_shared<ta::ExportQueue>(root, [dir = targetsDir_](const std::string& id, ta::ExportTarget& out) {
+    return readTarget(dir, id, out);
   });
-  queue_->onChanged = [this] { QMetaObject::invokeMethod(this, [this] { refreshExportStatus(); }, Qt::QueuedConnection); };
+  queue_->setOnChanged([this] { QMetaObject::invokeMethod(this, [this] { refreshExportStatus(); }, Qt::QueuedConnection); });
   queue_->setRetentionDays(options_.retentionDays);
   queue_->start();
   connect(&exportTimer_, &QTimer::timeout, this, &MainWindow::refreshExportStatus);
@@ -116,7 +128,12 @@ MainWindow::MainWindow(const LaunchOptions& launch, QWidget* parent) : QMainWind
 }
 
 MainWindow::~MainWindow() {
-  if (queue_) queue_->stop();
+  if (queue_) {
+    queue_->setOnChanged({});
+    // Bounded: a write stuck on an unreachable network folder does not hold
+    // the program open; that job is retried at the next start.
+    if (!queue_->stop(3000)) log("warn", tr("An export was still writing at exit; it will be retried at the next start"));
+  }
   stagerThread_.quit();
   stagerThread_.wait();
 }
@@ -159,10 +176,10 @@ void MainWindow::loadConfig() {
   }
 }
 
-bool MainWindow::lookupTarget(const std::string& id, ta::ExportTarget& out) const {
+bool MainWindow::readTarget(const ta::fs::Path& dir, const std::string& id, ta::ExportTarget& out) {
   // Called from the export thread: read the file, not the in-memory list.
   ta::Kv kv;
-  if (!ta::Kv::load(targetsDir_ / ta::fs::fromUtf8(id + ".target"), kv)) return false;
+  if (!ta::Kv::load(dir / ta::fs::fromUtf8(id + ".target"), kv)) return false;
   out = ta::ExportTarget::fromKv(kv);
   return true;
 }
@@ -386,9 +403,9 @@ void MainWindow::offerRecovery() {
   int kept = 0;
   for (const auto& img : s.images) kept += !img.discarded;
   if (kept == 0) {
-    QMetaObject::invokeMethod(stager_, "resumeSession", Qt::BlockingQueuedConnection,
+    QMetaObject::invokeMethod(stager_, "resumeSession", Qt::QueuedConnection,
                               Q_ARG(QString, q(ta::fs::toUtf8(open.front()))));
-    QMetaObject::invokeMethod(stager_, "closeSession", Qt::BlockingQueuedConnection, Q_ARG(QString, "empty"));
+    QMetaObject::invokeMethod(stager_, "closeSession", Qt::QueuedConnection, Q_ARG(QString, "empty"));
     return;
   }
   const QString when = QDateTime::fromMSecsSinceEpoch(s.startedUnixMs).toString("yyyy-MM-dd HH:mm");
@@ -448,7 +465,11 @@ void MainWindow::scanSources() {
     status(tr("Disarm before searching for sources."));
     return;
   }
-  for (HelperClient* s : scanners_) s->deleteLater();
+  for (const QPointer<HelperClient>& old : scanners_) {
+    if (!old) continue;
+    old->disconnect(this);
+    old->retire(kShutdownMs);
+  }
   scanners_.clear();
   sources_.clear();
   sourceBox_->clear();
@@ -492,7 +513,8 @@ void MainWindow::scanSources() {
     scanners_ << h;
     connect(h, &HelperClient::sourcesListed, this, [this, h, finishOne](QList<HelperClient::Source> list) {
       sources_ += list;
-      h->shutdown(kShutdownMs);
+      h->disconnect(this);
+      h->retire(kShutdownMs);
       finishOne();
     });
     const QString who = backends[i] == "sim" ? tr("Simulated") : (programs[i].contains("64") ? tr("64-bit") : tr("32-bit"));
@@ -537,10 +559,7 @@ void MainWindow::onSourceChanged() {
   if (!known && s->bits) profile_.helperBits = s->bits;
   settings_->setValue("source", s->name);
   // A different source needs a fresh open.
-  if (helper_ && helper_->isRunning() && helperState_ != "armed" && helperState_ != "transferring") {
-    helper_->shutdown(kShutdownMs);
-    helperState_ = "closed";
-  }
+  if (helper_ && helperState_ != "armed" && helperState_ != "transferring") retireHelper();
 }
 
 void MainWindow::editProfile() {
@@ -555,10 +574,19 @@ void MainWindow::editProfile() {
   std::string err;
   if (!profile_.save(profilesDir_, &err)) QMessageBox::warning(this, tr("Source settings"), q(err));
   // Settings are negotiated at open; reopen next time.
-  if (helper_ && helper_->isRunning()) {
-    helper_->shutdown(kShutdownMs);
-    helperState_ = "closed";
-  }
+  retireHelper();
+}
+
+// Let the current helper go without waiting for it: it quits (or is killed
+// after the timeout) and deletes itself.
+void MainWindow::retireHelper() {
+  if (!helper_) return;
+  HelperClient* h = helper_;
+  helper_ = nullptr;
+  helperReady_ = false;
+  helperState_ = "closed";
+  h->disconnect(this);
+  h->retire(kShutdownMs);
 }
 
 bool MainWindow::ensureHelper() {
@@ -575,10 +603,7 @@ bool MainWindow::ensureHelper() {
   }
 #endif
   if (helper_ && helper_->isRunning() && helper_->program() == program && helper_->backend() == s->backend) return true;
-  if (helper_) {
-    helper_->shutdown(kShutdownMs);
-    helper_->deleteLater();
-  }
+  retireHelper();
   helper_ = new HelperClient(this);
   helperReady_ = false;
   helper_->setTransferTimeout(profile_.callTimeoutMs > 0 ? std::max(profile_.callTimeoutMs, 30000) : 0);
@@ -605,7 +630,7 @@ bool MainWindow::ensureHelper() {
     armAfterOpen_ = false;
     log("error", code + ": " + text);
     QMessageBox::warning(this, tr("Source"), text);
-    if (fatal && helper_) helper_->shutdown(kShutdownMs);
+    if (fatal) retireHelper();
     updateBanner();
   });
   connect(helper_, &HelperClient::logLine, this, [this](const QString& level, const QString& text) { log(level, text); });
@@ -635,7 +660,11 @@ void MainWindow::arm() {
     QMessageBox::information(this, tr("Arm"), tr("No source is selected."));
     return;
   }
-  if (!ensureSession()) return;
+  if (unsaved_ > 0) {
+    QMessageBox::warning(this, tr("Arm"), tr("%1 image(s) are held in memory, not saved. Resolve them first.").arg(unsaved_));
+    return;
+  }
+  if (!ensureSession()) return;  // arming continues once the session exists
   const auto filled = mount_->filledSlots();
   const int target = mount_->targetSlot();
   if (target >= 0 && target < int(filled.size()) && filled[size_t(target)]) {
@@ -718,7 +747,11 @@ void MainWindow::onImageStaged(uint seq, int slot) {
 
 void MainWindow::updateBanner() {
   const bool armed = helperState_ == "armed" || helperState_ == "transferring";
-  if (armed) {
+  if (unsaved_ > 0 && !armed) {
+    banner_->setText(tr("%1 IMAGE(S) NOT SAVED — held in memory").arg(unsaved_));
+    banner_->setStyleSheet("background:#c62828;color:white;border-radius:4px;");
+    armButton_->setText(tr("Arm sensor"));
+  } else if (armed) {
     banner_->setText(helperState_ == "transferring" ? tr("RECEIVING IMAGE…")
                                                     : tr("ARMED — the sensor will capture the next exposure"));
     banner_->setStyleSheet("background:#c62828;color:white;border-radius:4px;");
@@ -772,19 +805,26 @@ void MainWindow::pushPatient() {
   QMetaObject::invokeMethod(stager_, "setPatient", Qt::QueuedConnection, Q_ARG(ta::PatientInfo, patientFromFields(nullptr)));
 }
 
+// Returns true when a session exists. Otherwise one is started on the staging
+// thread and arming resumes when it is reported (onSessionChanged).
 bool MainWindow::ensureSession() {
   if (haveSession_) return true;
+  if (armAfterSession_) return false;  // already starting one
+  armAfterSession_ = true;
   const QString source = currentSource() ? currentSource()->name : QString();
-  QMetaObject::invokeMethod(stager_, "startSession", Qt::BlockingQueuedConnection, Q_ARG(QString, q(layout().id)),
+  QMetaObject::invokeMethod(stager_, "startSession", Qt::QueuedConnection, Q_ARG(QString, q(layout().id)),
                             Q_ARG(QString, source), Q_ARG(ta::PatientInfo, patientFromFields(nullptr)));
-  QCoreApplication::processEvents();  // deliver sessionChanged
-  return haveSession_;
+  return false;
 }
 
 void MainWindow::onSessionChanged(const ta::SessionState& state, const QString& dir) {
   session_ = state;
   sessionDir_ = dir;
   haveSession_ = true;
+  if (armAfterSession_) {
+    armAfterSession_ = false;
+    QTimer::singleShot(0, this, &MainWindow::arm);
+  }
   mount_->setSession(state);
   if (viewedSeq_ >= 0) {
     const ta::StagedImage* img = state.image(uint(viewedSeq_));
@@ -830,9 +870,9 @@ bool MainWindow::settleCurrentSession(const QString& question) {
     }
     if (box.clickedButton() != drop) return false;
   }
-  QMetaObject::invokeMethod(stager_, "closeSession", Qt::BlockingQueuedConnection,
+  QMetaObject::invokeMethod(stager_, "closeSession", Qt::QueuedConnection,
                             Q_ARG(QString, kept ? QString("closed without export") : QString("empty")));
-  QCoreApplication::processEvents();
+  onSessionClosed();  // the staging thread closes it on disk in order, before any new session
   return true;
 }
 
@@ -910,6 +950,39 @@ void MainWindow::editTargets() {
   targets_ = updated;
 }
 
+void MainWindow::onStagingFailed(int count, const QString& reason) {
+  unsaved_ = count;
+  // Prevent more exposures piling up behind one that cannot be saved.
+  if (helperState_ == "armed" || helperState_ == "transferring") disarm(QString());
+  updateBanner();
+  log("error", tr("%1 image(s) could not be saved: %2").arg(count).arg(reason));
+  QMessageBox box(QMessageBox::Critical, tr("Image not saved"),
+                  tr("%1 image(s) could NOT be saved and are held in memory only.\n\nReason: %2\n\n"
+                     "Free disk space or fix the folder, then Retry, or save them to another folder. "
+                     "Do not close the program before this is resolved.")
+                      .arg(count)
+                      .arg(reason),
+                  QMessageBox::NoButton, this);
+  auto* retry = box.addButton(tr("Retry"), QMessageBox::AcceptRole);
+  auto* elsewhere = box.addButton(tr("Save to another folder…"), QMessageBox::ActionRole);
+  auto* drop = box.addButton(tr("Discard…"), QMessageBox::DestructiveRole);
+  box.setDefaultButton(retry);
+  box.exec();
+  if (box.clickedButton() == retry) {
+    QMetaObject::invokeMethod(stager_, "retryPending", Qt::QueuedConnection);
+  } else if (box.clickedButton() == elsewhere) {
+    const QString dir = QFileDialog::getExistingDirectory(this, tr("Save held images to"));
+    if (!dir.isEmpty()) QMetaObject::invokeMethod(stager_, "savePendingTo", Qt::QueuedConnection, Q_ARG(QString, dir));
+    else QTimer::singleShot(0, this, [this, count, reason] { onStagingFailed(count, reason); });
+  } else if (box.clickedButton() == drop) {
+    if (QMessageBox::warning(this, tr("Discard"), tr("Discard %1 unsaved image(s)? They cannot be recovered.").arg(count),
+                             QMessageBox::Discard | QMessageBox::Cancel) == QMessageBox::Discard)
+      QMetaObject::invokeMethod(stager_, "discardPending", Qt::QueuedConnection);
+    else
+      QTimer::singleShot(0, this, [this, count, reason] { onStagingFailed(count, reason); });
+  }
+}
+
 void MainWindow::exportSession() {
   if (!haveSession_) {
     QMessageBox::information(this, tr("Export"), tr("There is nothing to export yet."));
@@ -939,12 +1012,35 @@ void MainWindow::exportSession() {
     return;
   }
 
-  // Bring the journal up to date with the fields, then export from what is on disk.
-  QMetaObject::invokeMethod(stager_, "setPatient", Qt::BlockingQueuedConnection, Q_ARG(ta::PatientInfo, p));
-  ta::SessionState disk;
-  std::string err;
-  if (!ta::StagingSession::readState(ta::fs::fromUtf8(sessionDir_.toStdString()), disk, &err)) {
-    QMessageBox::critical(this, tr("Export"), q(err));
+  if (unsaved_ > 0) {
+    QMessageBox::warning(this, tr("Export"), tr("%1 image(s) are held in memory, not saved. Resolve them first.").arg(unsaved_));
+    return;
+  }
+  if (exportInFlight_) return;
+  exportInFlight_ = true;
+
+  // The disk work runs on the staging thread: bring the journal up to date
+  // with the fields, read the session back, then confirm here.
+  const ta::fs::Path dir = ta::fs::fromUtf8(sessionDir_.toStdString());
+  Stager* stager = stager_;
+  QPointer<MainWindow> self(this);
+  QMetaObject::invokeMethod(stager_, [stager, self, dir, p, enabled] {
+    stager->setPatient(p);
+    auto disk = std::make_shared<ta::SessionState>();
+    std::string err;
+    const bool ok = ta::StagingSession::readState(dir, *disk, &err);
+    QMetaObject::invokeMethod(self, [self, ok, disk, err, p, enabled, dir] {
+      if (self) self->confirmExport(ok, *disk, QString::fromStdString(err), p, enabled, dir);
+    }, Qt::QueuedConnection);
+  }, Qt::QueuedConnection);
+}
+
+void MainWindow::confirmExport(bool ok, const ta::SessionState& disk, const QString& readError,
+                               const ta::PatientInfo& p, const std::vector<ta::ExportTarget>& enabled,
+                               const ta::fs::Path& dir) {
+  if (!ok) {
+    exportInFlight_ = false;
+    QMessageBox::critical(this, tr("Export"), readError);
     return;
   }
   int kept = 0, unplaced = 0;
@@ -953,6 +1049,7 @@ void MainWindow::exportSession() {
     unplaced += !img.discarded && img.slot < 0;
   }
   if (kept == 0) {
+    exportInFlight_ = false;
     QMessageBox::information(this, tr("Export"), tr("There are no images to export."));
     return;
   }
@@ -973,21 +1070,35 @@ void MainWindow::exportSession() {
   box.addButton(QMessageBox::Cancel);
   box.setDefaultButton(QMessageBox::Cancel);
   box.exec();
-  if (box.clickedButton() != go) return;
-
-  const int jobs = queue_->enqueueSession(ta::fs::fromUtf8(sessionDir_.toStdString()), disk, layout(), enabled, &err);
-  if (jobs == 0) {
-    QMessageBox::critical(this, tr("Export"), q(err));
+  if (box.clickedButton() != go) {
+    exportInFlight_ = false;
     return;
   }
-  log("info", tr("Queued %1 export job(s)").arg(jobs));
-  QMetaObject::invokeMethod(stager_, "closeSession", Qt::BlockingQueuedConnection, Q_ARG(QString, "exported"));
-  QCoreApplication::processEvents();
-  setPatientFields(ta::PatientInfo{});
-  refreshExportStatus();
-  // The name is shown, not logged.
-  statusBar()->showMessage(tr("Export queued for %1.").arg(name), 8000);
-  log("info", tr("Export queued"));
+
+  // Writing the job files (each flushed to disk) and closing the session also
+  // run on the staging thread, in that order.
+  std::shared_ptr<ta::ExportQueue> queue = queue_;
+  Stager* stager = stager_;
+  QPointer<MainWindow> self(this);
+  const ta::Layout lay = layout();
+  QMetaObject::invokeMethod(stager_, [queue, stager, self, dir, disk, lay, enabled, name] {
+    std::string err;
+    const int jobs = queue->enqueueSession(dir, disk, lay, enabled, &err);
+    if (jobs > 0) stager->closeSession("exported");
+    QMetaObject::invokeMethod(self, [self, jobs, err, name] {
+      if (!self) return;
+      self->exportInFlight_ = false;
+      if (jobs == 0) {
+        QMessageBox::critical(self, tr("Export"), QString::fromStdString(err));
+        return;
+      }
+      self->log("info", tr("Queued %1 export job(s)").arg(jobs));
+      self->setPatientFields(ta::PatientInfo{});
+      self->refreshExportStatus();
+      // The name is shown, not logged.
+      self->statusBar()->showMessage(tr("Export queued for %1.").arg(name), 8000);
+    }, Qt::QueuedConnection);
+  }, Qt::QueuedConnection);
 }
 
 void MainWindow::refreshExportStatus() {
@@ -1217,13 +1328,21 @@ void MainWindow::editOptions() {
 }
 
 void MainWindow::closeEvent(QCloseEvent* e) {
+  if (unsaved_ > 0) {
+    QMessageBox::warning(this, tr("Exit"),
+                         tr("%1 image(s) are held in memory, not saved. Retry, save them elsewhere or discard them "
+                            "first.").arg(unsaved_));
+    e->ignore();
+    return;
+  }
   if (helperState_ == "armed" || helperState_ == "transferring") {
     if (QMessageBox::question(this, tr("Exit"), tr("The sensor is armed. Disarm and exit?")) != QMessageBox::Yes) {
       e->ignore();
       return;
     }
   }
-  if (helper_) helper_->shutdown(kShutdownMs);
+  // Closing: wait (bounded) so the source is disarmed and closed before exit.
+  if (helper_) helper_->shutdown(3000);
   settings_->setValue("ui/splitter", split_->saveState());
   settings_->sync();
   // An unexported session stays on disk and is offered at the next start.

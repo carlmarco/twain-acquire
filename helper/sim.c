@@ -191,7 +191,7 @@ static void deliver(void) {
   if (g_sim.kind == SIM_CRASH_ON_TRANSFER) abort();
   synth(pixels, (int)fi.row_bytes);
   ta_frame_info_put(info, &fi);
-  ta_send2(TA_MSG_FRAME, info, sizeof info, pixels, (uint32_t)size);
+  ta_send_frame(info, pixels, size);
   free(pixels);
   ++g_sim.delivered;
 }

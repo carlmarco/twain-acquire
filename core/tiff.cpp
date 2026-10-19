@@ -48,7 +48,14 @@ Entry rationalEntry(uint16_t tag, double v) {
 
 }  // namespace
 
+bool tiffFits(uint32_t width, uint32_t height, int outBits) {
+  // Pixel data plus room for the header and tags, below the 32-bit offset limit.
+  const uint64_t pixels = uint64_t(width) * height * (outBits == 8 ? 1u : 2u);
+  return pixels <= 0xFFFFFFFFull - 65536;
+}
+
 std::vector<uint8_t> encodeTiff(const Frame& src, int outBits, const TiffMeta& meta) {
+  if (!tiffFits(src.width, src.height, outBits)) return {};
   const Frame f = (outBits == 8) ? toBitDepth(src, 8) : src;
   const uint32_t bps = outBits == 8 ? 8 : 16;
   const uint32_t stripBytes = f.width * f.height * (bps / 8);

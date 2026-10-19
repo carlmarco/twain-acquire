@@ -93,6 +93,24 @@ void HelperClient::shutdown(int timeoutMs) {
   }
 }
 
+void HelperClient::retire(int timeoutMs) {
+  watchdog_.stop();
+  if (proc_.state() == QProcess::NotRunning) {
+    deleteLater();
+    return;
+  }
+  expectingExit_ = true;
+  dead_ = true;
+  connect(&proc_, &QProcess::finished, this, &QObject::deleteLater);
+  uint8_t h[TA_WIRE_HEADER_SIZE];
+  ta_wire_put_header(h, TA_MSG_QUIT, 0);
+  proc_.write(reinterpret_cast<const char*>(h), sizeof h);
+  proc_.closeWriteChannel();
+  QTimer::singleShot(timeoutMs, this, [this] {
+    if (proc_.state() != QProcess::NotRunning) proc_.kill();
+  });
+}
+
 void HelperClient::settle() {
   watchdog_.stop();
   pendingWhat_.clear();

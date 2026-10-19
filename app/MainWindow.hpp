@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QList>
+#include <QPointer>
 #include <QMainWindow>
 #include <QThread>
 #include <QTimer>
@@ -62,6 +63,7 @@ class MainWindow : public QMainWindow {
   void onSourceChanged();
   void editProfile();
   bool ensureHelper();
+  void retireHelper();
   void openSource();
 
   // arming
@@ -93,9 +95,12 @@ class MainWindow : public QMainWindow {
 
   // export
   void exportSession();
+  void confirmExport(bool ok, const ta::SessionState& disk, const QString& readError, const ta::PatientInfo& p,
+                     const std::vector<ta::ExportTarget>& enabled, const ta::fs::Path& dir);
+  void onStagingFailed(int count, const QString& reason);
   void editTargets();
   void refreshExportStatus();
-  bool lookupTarget(const std::string& id, ta::ExportTarget& out) const;
+  static bool readTarget(const ta::fs::Path& dir, const std::string& id, ta::ExportTarget& out);
 
   void editOptions();
   void editMount();
@@ -125,9 +130,12 @@ class MainWindow : public QMainWindow {
   ta::SourceProfile profile_;
 
   HelperClient* helper_ = nullptr;
-  QList<HelperClient*> scanners_;
+  QList<QPointer<HelperClient>> scanners_;
   bool armAfterOpen_ = false;
   bool helperReady_ = false;  // HELLO received from the current helper
+  bool armAfterSession_ = false;  // arming waits for the session being started
+  bool exportInFlight_ = false;
+  int unsaved_ = 0;              // images held in memory because they could not be saved
   bool stateUnknown_ = false;
   QString helperState_ = "closed";
   QTimer armTimer_;
@@ -138,7 +146,7 @@ class MainWindow : public QMainWindow {
   QString sessionDir_;
   bool haveSession_ = false;
 
-  std::unique_ptr<ta::ExportQueue> queue_;
+  std::shared_ptr<ta::ExportQueue> queue_;
   QTimer exportTimer_;
 
   int viewedSeq_ = -1;

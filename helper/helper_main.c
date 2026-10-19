@@ -19,6 +19,43 @@ static int g_out = -1;
 #endif
 
 static ta_state g_state = TA_STATE_CLOSED;
+static unsigned g_exit_grace_ms = 8000;
+
+/* ---- exit watchdog ------------------------------------------------------- */
+
+#ifdef _WIN32
+static DWORD WINAPI exit_after_grace(LPVOID arg) {
+  (void)arg;
+  Sleep(g_exit_grace_ms);
+  ExitProcess(3);
+  return 0;
+}
+#else
+#include <pthread.h>
+static void *exit_after_grace(void *arg) {
+  (void)arg;
+  usleep(g_exit_grace_ms * 1000u);
+  _exit(3);
+  return NULL;
+}
+#endif
+
+void ta_arm_exit_watchdog(void) {
+  static volatile int armed = 0;
+  if (armed) return;
+  armed = 1;
+#ifdef _WIN32
+  {
+    HANDLE t = CreateThread(NULL, 0, exit_after_grace, NULL, 0, NULL);
+    if (t) CloseHandle(t);
+  }
+#else
+  {
+    pthread_t t;
+    if (pthread_create(&t, NULL, exit_after_grace, NULL) == 0) pthread_detach(t);
+  }
+#endif
+}
 
 /* ---- output -------------------------------------------------------------- */
 
@@ -64,10 +101,26 @@ static void send_kv2(uint32_t type, const char *k1, const char *v1, const char *
 void ta_send_state(ta_state s, const char *reason) {
   static const char *names[] = {"closed", "open", "armed", "transferring"};
   g_state = s;
+#ifdef _WIN32
+  /* While armed the PC must not sleep: an exposure would be lost. This is per
+     thread, and states are always sent from the main thread. */
+  SetThreadExecutionState(s >= TA_STATE_ARMED ? (ES_CONTINUOUS | ES_SYSTEM_REQUIRED) : ES_CONTINUOUS);
+#endif
   send_kv2(TA_MSG_STATE, "state", names[s], reason ? "reason" : NULL, reason ? reason : "", NULL, NULL);
 }
 
 ta_state ta_current_state(void) { return g_state; }
+
+int ta_send_frame(const uint8_t info[TA_FRAME_INFO_SIZE], const void *data, uint64_t length) {
+  if (length + TA_FRAME_INFO_SIZE > TA_WIRE_MAX_PAYLOAD) {
+    char text[160];
+    snprintf(text, sizeof text, "image of %llu bytes exceeds the %u MB transfer limit and was not sent",
+             (unsigned long long)length, TA_WIRE_MAX_PAYLOAD / (1024u * 1024u));
+    ta_send_error("too-large", text, 0);
+    return 0;
+  }
+  return ta_send2(TA_MSG_FRAME, info, TA_FRAME_INFO_SIZE, data, (uint32_t)length);
+}
 
 void ta_send_error(const char *code, const char *text, int fatal) {
   send_kv2(TA_MSG_ERROR, "code", code, "text", text, "fatal", fatal ? "true" : "false");
@@ -188,6 +241,7 @@ int main(int argc, char **argv) {
   for (i = 1; i < argc; ++i) {
     if (!strcmp(argv[i], "--backend") && i + 1 < argc) backend = argv[++i];
     else if (!strcmp(argv[i], "--dsm") && i + 1 < argc) dsm_path = argv[++i];
+    else if (!strcmp(argv[i], "--exit-grace-ms") && i + 1 < argc) g_exit_grace_ms = (unsigned)atoi(argv[++i]);
   }
   if (!claim_stdout()) return 2;
 #ifdef _WIN32

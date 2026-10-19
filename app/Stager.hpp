@@ -5,6 +5,7 @@
 #include <QObject>
 #include <QString>
 #include <memory>
+#include <vector>
 
 #include "AppTypes.hpp"
 #include "fs.hpp"
@@ -30,6 +31,12 @@ class Stager : public QObject {
   void closeSession(QString reason);
   void loadImage(uint seq);
 
+  // Images that could not be written (disk full, no permission, no session)
+  // are kept here, in order, until one of these resolves them.
+  void retryPending();
+  void savePendingTo(QString dir);
+  void discardPending();
+
  signals:
   void sessionChanged(ta::SessionState state, QString dir);
   void sessionClosed(QString dir);
@@ -37,11 +44,22 @@ class Stager : public QObject {
   void imageStaged(uint seq, int slot);
   void imageLoaded(uint seq, FramePtr frame);
   void problem(QString text);
+  // `count` images are held in memory, not saved; the newest reason is given.
+  void stagingFailed(int count, QString reason);
+  void pendingCleared();
 
  private:
   void emitState();
   void makeThumbnail(uint seq, const ta::Frame& frame, const ta::Orientation& o);
 
+  struct Pending {
+    ta::Frame frame;
+    ta::Orientation orientation;
+    int slot = -1;
+  };
+  bool stage(Pending& p, std::string* err);
+
   ta::fs::Path root_;
+  std::vector<Pending> pending_;
   std::unique_ptr<ta::StagingSession> session_;
 };
