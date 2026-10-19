@@ -64,7 +64,24 @@ void HelperClient::send(uint32_t type, const QByteArray& payload, int timeoutMs,
   proc_.write(reinterpret_cast<const char*>(h), sizeof h);
   if (!payload.isEmpty()) proc_.write(payload);
   pendingWhat_ = QString::fromLatin1(what);
+  pending_ = timeoutMs > 0 ? type : 0;
   if (timeoutMs > 0) watchdog_.start(timeoutMs);
+}
+
+// Replies arrive in order but not one per request: OPEN is answered by OPENED
+// and then a STATE, so a request sent from the OPENED handler would have its
+// watchdog cancelled by that STATE. Only the reply a request waits for counts.
+bool HelperClient::answers(uint32_t type, const QString& state) const {
+  if (type == TA_MSG_ERROR) return pending_ != 0;  // a request, or a transfer, failed
+  switch (pending_) {
+    case TA_MSG_LIST: return type == TA_MSG_LIST_END;
+    case TA_MSG_OPEN: return type == TA_MSG_OPENED;
+    case TA_MSG_ENABLE: return type == TA_MSG_STATE && (state == "armed" || state == "transferring");
+    case TA_MSG_DISABLE: return type == TA_MSG_STATE && (state == "open" || state == "closed");
+    case TA_MSG_CLOSE: return type == TA_MSG_STATE && state == "closed";
+    case kTransfer: return type == TA_MSG_FRAME || (type == TA_MSG_STATE && state != "transferring");
+    default: return false;
+  }
 }
 
 void HelperClient::list(int timeoutMs) {
@@ -114,6 +131,7 @@ void HelperClient::retire(int timeoutMs) {
 void HelperClient::settle() {
   watchdog_.stop();
   pendingWhat_.clear();
+  pending_ = 0;
 }
 
 void HelperClient::onReadyRead() {
@@ -165,30 +183,31 @@ void HelperClient::handle(uint32_t type, const QByteArray& payload) {
       break;
     }
     case TA_MSG_LIST_END:
-      settle();
+      if (answers(type, {})) settle();
       emit sourcesListed(listing_);
       break;
     case TA_MSG_OPENED:
-      settle();
+      if (answers(type, {})) settle();
       emit opened(kv);
       break;
     case TA_MSG_STATE:
-      settle();
       state_ = q("state");
-      if (state_ == "transferring" && transferTimeoutMs_ > 0) {
+      if (answers(type, state_)) settle();
+      if (state_ == "transferring" && transferTimeoutMs_ > 0 && pending_ == 0) {
         // No request is outstanding during a transfer, but a source that
         // hangs half-way must still be caught.
         pendingWhat_ = QStringLiteral("transferring an image");
+        pending_ = kTransfer;
         watchdog_.start(transferTimeoutMs_);
       }
       emit stateChanged(state_, q("reason"));
       break;
     case TA_MSG_FRAME:
-      if (pendingWhat_ == QLatin1String("transferring an image")) settle();
+      if (answers(type, {})) settle();
       emit frameReceived(payload);
       break;
     case TA_MSG_ERROR:
-      settle();
+      if (answers(type, {})) settle();
       emit failed(q("code"), q("text"), kv.boolean("fatal"));
       break;
     case TA_MSG_LOG:

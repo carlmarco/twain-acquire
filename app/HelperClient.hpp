@@ -74,6 +74,11 @@ class HelperClient : public QObject {
   QTimer watchdog_;
   QString program_, backend_, state_ = "closed";
   QString pendingWhat_;
+  // What the watchdog is waiting for: a request type (TA_MSG_*), kTransfer,
+  // or 0. Only the reply to that request settles it.
+  uint32_t pending_ = 0;
+  static constexpr uint32_t kTransfer = 0xFFFFu;
+  bool answers(uint32_t type, const QString& state) const;
   QList<Source> listing_;
   int bits_ = 0;
   int transferTimeoutMs_ = 30000;

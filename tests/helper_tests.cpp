@@ -134,6 +134,21 @@ TEST("helper: a source that hangs while arming is stopped by the watchdog") {
   CHECK(!r.client.isRunning());
 }
 
+TEST("helper: arming straight from the opened signal is still guarded by the watchdog") {
+  // The main window arms inside its handler for OPENED; the STATE that follows
+  // OPENED must not cancel the arm request's watchdog.
+  Recorder r;
+  CHECK(r.start());
+  QObject::connect(&r.client, &HelperClient::opened, [&] { r.client.enable(400); });
+  ta::Kv kv;
+  kv.set("source", "Simulated sensor (hangs when armed)");
+  r.client.open(kv, 3000);
+  QElapsedTimer t;
+  t.start();
+  CHECK(waitFor([&] { return !r.died.isEmpty(); }, 5000));
+  CHECK(t.elapsed() < 3000 && r.died.contains("arming"));
+}
+
 TEST("helper: a source that crashes mid-transfer is reported, not hung on") {
   Recorder r;
   CHECK(r.start());
