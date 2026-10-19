@@ -107,4 +107,7 @@ holds no patient names and is capped at about 1 MB plus one older file.
 
 ## License
 
-MIT. See `LICENSE`.
+Mozilla Public License 2.0 (`LICENSE`). You may use, modify and distribute
+twain-acquire, including inside other software, open or closed. If you
+distribute a modified version of any file covered by this licence, you must
+make that file's source available under the same licence.
