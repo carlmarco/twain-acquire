@@ -119,6 +119,12 @@ bool atomicWrite(const Path& dest, const void* data, size_t size, std::string* e
     setErr(err, lastError("MoveFileExW"));
     ok = false;
   }
+  // A rename keeps the hidden attribute the temporary was created with; the
+  // finished file must be visible, or programs watching the folder skip it.
+  if (ok && !SetFileAttributesW(dest.c_str(), FILE_ATTRIBUTE_NORMAL)) {
+    setErr(err, lastError("SetFileAttributesW"));
+    ok = false;
+  }
   if (!ok) DeleteFileW(tmp.c_str());
   return ok;
 #else

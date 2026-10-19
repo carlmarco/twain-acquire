@@ -4,6 +4,7 @@
 #include <QDir>
 #include <QElapsedTimer>
 #include <QFile>
+#include <QFileInfo>
 #include <QEventLoop>
 #include <QPointer>
 #include <QProcess>
@@ -298,7 +299,13 @@ TEST("stager: an image that cannot be written is kept in memory, in order, until
   s.addFrame(r.frames.value(0), {}, {}, 0);
   CHECK(held == 1);
   s.savePendingTo(elsewhere.path());
-  CHECK(cleared == 2 && QDir(elsewhere.path()).entryList({"unsaved-*.tif"}).size() == 1);
+  CHECK(cleared == 2);
+  // Finished files must be visible: a hidden file is skipped by programs that
+  // watch a folder (and by a default directory listing, as here).
+  const QStringList saved = QDir(elsewhere.path()).entryList({"unsaved-*.tif"}, QDir::Files | QDir::Hidden);
+  CHECK(saved.size() == 1);
+  CHECK(!saved.isEmpty() && !QFileInfo(QDir(elsewhere.path()).filePath(saved.value(0))).isHidden());
+  CHECK(QDir(elsewhere.path()).entryList({"unsaved-*.tif"}).size() == 1);
   mendFolder();
 }
 
