@@ -1,3 +1,7 @@
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 add_executable(ta_core_tests core_tests.cpp)
 target_link_libraries(ta_core_tests PRIVATE ta_core)
 add_test(NAME core COMMAND ta_core_tests)

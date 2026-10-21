@@ -1,3 +1,7 @@
+; This Source Code Form is subject to the terms of the Mozilla Public
+; License, v. 2.0. If a copy of the MPL was not distributed with this
+; file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 ; Inno Setup script. Built by the release workflow:
 ;   iscc /DAppVersion=1.2.3 /DStageDir=<stage> installer\twain-acquire.iss
 ; <stage>\app  - the application, its helpers and Qt (windeployqt output)

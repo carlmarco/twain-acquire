@@ -1,3 +1,7 @@
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 add_library(ta_core STATIC
   crc32.cpp dicom.cpp export.cpp frame.cpp fs.cpp handoff.cpp kv.cpp layout.cpp
   normalize.cpp profile.cpp render.cpp staging.cpp tiff.cpp)

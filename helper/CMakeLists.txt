@@ -1,3 +1,7 @@
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 set(TA_HELPER_SOURCES helper_main.c sim.c loop_posix.c loop_win.c twain_win.c)
 
 if(CMAKE_SIZEOF_VOID_P EQUAL 8)

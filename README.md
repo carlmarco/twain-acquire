@@ -7,6 +7,15 @@ exports them as DICOM or TIFF to the imaging software that reviews them.
 It acquires and exports only. It contains no sensor driver and does no
 diagnostic image processing.
 
+## Not a medical device
+
+twain-acquire has not been cleared, approved or certified by the FDA or any
+other regulator, and carries no CE mark. It is provided as is, without
+warranty of any kind (sections 6 and 7 of the licence). Whoever installs it in
+a clinic is responsible for whether that use is allowed where they practise,
+and for checking that images reach the imaging software intact, under the
+right patient and in the right orientation.
+
 ## Patient from the practice software
 
 Practice software can start twain-acquire for the patient who is open. The
@@ -104,6 +113,17 @@ Exported sessions, and the records of finished exports, are deleted after a
 number of days set in Setup > Options (7 by default; "Never" keeps them).
 Sessions that were not exported are never deleted automatically. The log file
 holds no patient names and is capped at about 1 MB plus one older file.
+
+## Reporting problems
+
+Report security problems privately, as described in `SECURITY.md`. For other
+bugs, open an issue. Never attach patient images, DICOM or TIFF files, names,
+IDs or dates of birth to an issue, and read a log file before attaching it:
+file and folder paths in it can contain patient details.
+
+## Contributing
+
+Pull requests are not being accepted at this time. Bug reports are welcome.
 
 ## License
 

@@ -1,3 +1,7 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+
 /* Event loop for non-Windows builds (simulated sources only).
  *
  * As on Windows, a reader thread takes requests off stdin and the main thread
