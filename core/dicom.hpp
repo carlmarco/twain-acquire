@@ -54,6 +54,12 @@ struct DicomImage {
 std::vector<uint8_t> encodeDicom(const Frame& f, const PatientInfo& patient, const DicomStudy& study,
                                  const DicomImage& image);
 
+// Read back a single-frame greyscale image from a Part 10 file in explicit VR
+// little endian, uncompressed, 8 or 16 bits allocated, unsigned - what
+// encodeDicom writes. Anything else is refused with a reason, not guessed at.
+// MONOCHROME1 is inverted to MONOCHROME2.
+bool decodeDicom(const uint8_t* data, size_t size, Frame& out, std::string* err = nullptr);
+
 // A new UID. With an empty root it is a UUID-derived "2.25." UID, which needs
 // no registered root; otherwise root + "." + time + "." + random, at most 64 chars.
 std::string makeUid(const std::string& root = {});

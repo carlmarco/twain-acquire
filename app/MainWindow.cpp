@@ -17,6 +17,7 @@
 #include <QFileInfo>
 #include <QPointer>
 #include <QFileSystemWatcher>
+#include <QInputDialog>
 #include <QCryptographicHash>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -38,6 +39,8 @@
 #include "ImageView.hpp"
 #include "MountView.hpp"
 #include "Stager.hpp"
+#include "ViewerWindow.hpp"
+#include "manifest.hpp"
 
 namespace {
 
@@ -333,6 +336,7 @@ void MainWindow::buildUi() {
   auto* sessionMenu = menuBar()->addMenu(tr("&Session"));
   sessionMenu->addAction(tr("&New session"), this, &MainWindow::newSession);
   sessionMenu->addAction(tr("&Export…"), QKeySequence(Qt::CTRL | Qt::Key_E), this, &MainWindow::exportSession);
+  sessionMenu->addAction(tr("&Open exported images…"), QKeySequence::Open, this, &MainWindow::openExported);
   sessionMenu->addSeparator();
   sessionMenu->addAction(tr("E&xit"), this, &QWidget::close);
   auto* imageMenu = menuBar()->addMenu(tr("&Image"));
@@ -692,6 +696,62 @@ void MainWindow::arm() {
     if (helperReady_) openSource();
   }
   updateBanner();
+}
+
+void MainWindow::openExported() {
+  const QString dir = QFileDialog::getExistingDirectory(this, tr("Folder of exported images"),
+                                                        lastViewedFolder_.isEmpty() ? QDir::homePath() : lastViewedFolder_);
+  if (dir.isEmpty()) return;
+  lastViewedFolder_ = dir;
+  const ta::fs::Path folder = ta::fs::fromUtf8(dir.toStdString());
+
+  ViewerWindow* viewer = nullptr;
+  const auto manifests = ta::listManifests(folder);
+  if (!manifests.empty()) {
+    // Several sessions exported into one folder: let the operator pick one.
+    std::vector<ta::MountManifest> read;
+    QStringList names, problems;
+    for (const auto& file : manifests) {
+      ta::MountManifest m;
+      std::string err;
+      if (!ta::readManifest(file, m, &err)) {
+        problems << q(err);
+        continue;
+      }
+      QString who = q(m.patient.displayName());
+      if (who.isEmpty()) who = m.patient.id.empty() ? tr("No patient") : q(m.patient.id);
+      QString when = q(m.exported);
+      when.replace('T', ' ');
+      names << tr("%1 - %2 - %3 images - exported %4").arg(who, q(m.layout.name)).arg(m.images.size()).arg(when);
+      read.push_back(std::move(m));
+    }
+    if (read.empty()) {
+      QMessageBox::warning(this, tr("Open exported images"),
+                           tr("The mount files in this folder could not be read:\n\n%1").arg(problems.join("\n")));
+      return;
+    }
+    int pick = 0;
+    if (read.size() > 1) {
+      bool ok = false;
+      const QString chosen = QInputDialog::getItem(this, tr("Open exported images"),
+                                                   tr("This folder holds several exported sessions (newest first):"),
+                                                   names, 0, false, &ok);
+      if (!ok) return;
+      pick = int(names.indexOf(chosen));
+    }
+    viewer = new ViewerWindow(folder, read[size_t(std::max(0, pick))], this);
+  } else {
+    const auto files = ta::listImageFiles(folder);
+    if (files.empty()) {
+      QMessageBox::information(this, tr("Open exported images"),
+                               tr("There are no mount files and no DICOM or TIFF images in this folder."));
+      return;
+    }
+    viewer = new ViewerWindow(folder, files, this);
+  }
+  viewer->show();
+  // No path: a folder per session is usually named after the patient.
+  log("info", tr("Opened exported images for viewing"));
 }
 
 void MainWindow::disarm(const QString& why) {

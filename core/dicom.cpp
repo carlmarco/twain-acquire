@@ -7,6 +7,8 @@
 #include <array>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <ctime>
 #include <map>
 #include <random>
@@ -283,6 +285,176 @@ std::vector<uint8_t> encodeDicom(const Frame& f, const PatientInfo& patient, con
   const std::vector<uint8_t> body = d.encode();
   out.insert(out.end(), body.begin(), body.end());
   return out;
+}
+
+namespace {
+
+class DicomReader {
+ public:
+  DicomReader(const uint8_t* d, size_t n) : d_(d), n_(n) {}
+
+  bool run(Frame& out, std::string* err) {
+    if (n_ < 132 || std::memcmp(d_ + 128, "DICM", 4) != 0) return fail(err, "not a DICOM Part 10 file");
+    at_ = 132;
+    std::string transferSyntax;
+    uint16_t rows = 0, cols = 0, allocated = 0, stored = 0, samples = 1, representation = 0, frames = 1;
+    std::string photometric = "MONOCHROME2", spacing;
+    const uint8_t* pixels = nullptr;
+    uint32_t pixelLen = 0;
+    while (at_ < n_) {
+      uint16_t group, element;
+      std::string vr;
+      uint32_t len;
+      if (!header(group, element, vr, len)) return fail(err, "truncated element header");
+      if (group == 0x0002 && element == 0x0010) transferSyntax = text(len);
+      if (group != 0x0002 && !transferSyntax.empty() && trim(transferSyntax) != kExplicitVrLittleEndian)
+        return fail(err, "transfer syntax " + trim(transferSyntax) + " is not supported (only explicit VR little endian)");
+      if (vr == "SQ" || len == 0xFFFFFFFFu) {
+        if (group == 0x7FE0 && element == 0x0010) return fail(err, "compressed pixel data is not supported");
+        if (!skipSequence(len)) return fail(err, "malformed sequence");
+        continue;
+      }
+      if (len > n_ - at_) return fail(err, "element runs past the end of the file");
+      if (group == 0x0028) {
+        const uint16_t v = len >= 2 ? uint16_t(d_[at_] | d_[at_ + 1] << 8) : 0;
+        switch (element) {
+          case 0x0002: samples = v; break;
+          case 0x0004: photometric = trim(text(len)); break;
+          case 0x0008: frames = uint16_t(std::atoi(trim(text(len)).c_str())); break;
+          case 0x0010: rows = v; break;
+          case 0x0011: cols = v; break;
+          case 0x0030: spacing = trim(text(len)); break;
+          case 0x0100: allocated = v; break;
+          case 0x0101: stored = v; break;
+          case 0x0103: representation = v; break;
+        }
+      } else if (group == 0x7FE0 && element == 0x0010) {
+        pixels = d_ + at_;
+        pixelLen = len;
+      }
+      at_ += len;
+    }
+    if (!pixels) return fail(err, "no pixel data");
+    if (samples != 1) return fail(err, "colour images are not supported");
+    if (frames > 1) return fail(err, "multi-frame images are not supported");
+    if (representation != 0) return fail(err, "signed pixel data is not supported");
+    if (photometric != "MONOCHROME2" && photometric != "MONOCHROME1")
+      return fail(err, "photometric interpretation " + photometric + " is not supported");
+    if (allocated != 8 && allocated != 16) return fail(err, "bits allocated must be 8 or 16");
+    if (stored == 0 || stored > allocated) stored = allocated;
+    if (stored < 8) return fail(err, "fewer than 8 bits stored is not supported");
+    if (rows == 0 || cols == 0) return fail(err, "image has no size");
+    const size_t count = size_t(rows) * cols;
+    if (pixelLen < count * (allocated / 8)) return fail(err, "pixel data is shorter than the image");
+
+    out = Frame{};
+    out.width = cols;
+    out.height = rows;
+    out.bitsStored = uint8_t(stored);
+    out.pixels.resize(count);
+    const uint16_t mask = uint16_t((1u << stored) - 1u);
+    for (size_t i = 0; i < count; ++i) {
+      const uint16_t v = allocated == 8 ? pixels[i] : uint16_t(pixels[2 * i] | pixels[2 * i + 1] << 8);
+      out.pixels[i] = uint16_t(v & mask);
+    }
+    if (photometric == "MONOCHROME1")
+      for (auto& p : out.pixels) p = uint16_t(mask - p);
+    // Pixel Spacing is "row\column" in mm.
+    const size_t slash = spacing.find('\\');
+    if (slash != std::string::npos) {
+      const double rowMm = std::atof(spacing.substr(0, slash).c_str());
+      const double colMm = std::atof(spacing.substr(slash + 1).c_str());
+      if (rowMm > 0 && colMm > 0) {
+        out.dpiY = 25.4 / rowMm;
+        out.dpiX = 25.4 / colMm;
+      }
+    }
+    return true;
+  }
+
+ private:
+  static bool fail(std::string* err, const std::string& why) {
+    if (err) *err = why;
+    return false;
+  }
+  static std::string trim(std::string s) {
+    while (!s.empty() && (s.back() == ' ' || s.back() == '\0')) s.pop_back();
+    while (!s.empty() && s.front() == ' ') s.erase(s.begin());
+    return s;
+  }
+  std::string text(uint32_t len) const {
+    if (len > n_ - at_) return {};
+    return std::string(reinterpret_cast<const char*>(d_ + at_), len);
+  }
+  uint16_t u16(size_t p) const { return uint16_t(d_[p] | d_[p + 1] << 8); }
+  uint32_t u32(size_t p) const { return uint32_t(d_[p]) | uint32_t(d_[p + 1]) << 8 | uint32_t(d_[p + 2]) << 16 | uint32_t(d_[p + 3]) << 24; }
+
+  // Explicit VR element header; leaves at_ on the value.
+  bool header(uint16_t& group, uint16_t& element, std::string& vr, uint32_t& len) {
+    if (n_ - at_ < 8) return false;
+    group = u16(at_);
+    element = u16(at_ + 2);
+    if (group == 0xFFFE) {  // item and delimiters have no VR
+      vr.clear();
+      len = u32(at_ + 4);
+      at_ += 8;
+      return true;
+    }
+    vr.assign(reinterpret_cast<const char*>(d_ + at_ + 4), 2);
+    if (longLength(vr)) {
+      if (n_ - at_ < 12) return false;
+      len = u32(at_ + 8);
+      at_ += 12;
+    } else {
+      len = u16(at_ + 6);
+      at_ += 8;
+    }
+    return true;
+  }
+
+  // Skip a sequence value (defined or undefined length), at_ on its first byte.
+  bool skipSequence(uint32_t len, int depth = 0) {
+    if (depth > 16) return false;
+    if (len != 0xFFFFFFFFu) {
+      if (len > n_ - at_) return false;
+      at_ += len;
+      return true;
+    }
+    for (;;) {
+      uint16_t g, e;
+      std::string vr;
+      uint32_t l;
+      if (!header(g, e, vr, l)) return false;
+      if (g == 0xFFFE && e == 0xE0DD) return true;  // sequence delimiter
+      if (g != 0xFFFE || e != 0xE000) return false;
+      if (l != 0xFFFFFFFFu) {
+        if (l > n_ - at_) return false;
+        at_ += l;
+        continue;
+      }
+      // Undefined-length item: elements until the item delimiter.
+      for (;;) {
+        if (!header(g, e, vr, l)) return false;
+        if (g == 0xFFFE && e == 0xE00D) break;
+        if (vr == "SQ" || l == 0xFFFFFFFFu) {
+          if (!skipSequence(l, depth + 1)) return false;
+        } else {
+          if (l > n_ - at_) return false;
+          at_ += l;
+        }
+      }
+    }
+  }
+
+  const uint8_t* d_;
+  size_t n_;
+  size_t at_ = 0;
+};
+
+}  // namespace
+
+bool decodeDicom(const uint8_t* data, size_t size, Frame& out, std::string* err) {
+  return DicomReader(data, size).run(out, err);
 }
 
 }  // namespace ta

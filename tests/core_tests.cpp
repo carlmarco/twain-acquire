@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <fstream>
 #include <map>
 #include <random>
 #include <thread>
@@ -17,6 +18,8 @@
 #include "export.hpp"
 #include "frame.hpp"
 #include "handoff.hpp"
+#include "json.hpp"
+#include "manifest.hpp"
 #include "fs.hpp"
 #include "kv.hpp"
 #include "layout.hpp"
@@ -681,5 +684,174 @@ TEST("mount: a burst of frames fills consecutive slots before any is saved") {
 }
 
 TEST("crc32: known value") { CHECK(crc32("123456789", 9) == 0xCBF43926u); }
+
+TEST("json: parses what it writes, refuses what is not JSON") {
+  JsonWriter w;
+  w.beginObject();
+  w.str("name", "Ann \"Q\" O'Roe\\\n\t\x01");
+  w.integer("n", -42);
+  w.flag("yes", true);
+  w.null("none");
+  w.beginArray("list");
+  w.beginObject();
+  w.str("k", "v");
+  w.endObject();
+  w.endArray();
+  w.beginArray("empty");
+  w.endArray();
+  w.endObject();
+  Json j;
+  std::string err;
+  CHECK(Json::parse(w.text(), j, &err));
+  CHECK(j.str("name") == "Ann \"Q\" O'Roe\\\n\t\x01" && j.integer("n") == -42 && j.flag("yes"));
+  CHECK(j.find("none") && j.find("none")->type == Json::Type::Null);
+  CHECK(j.find("list")->array.size() == 1 && j.find("list")->array[0].str("k") == "v");
+  CHECK(j.find("empty")->array.empty());
+  CHECK(Json::parse("\xEF\xBB\xBF{\"a\": \"\\u00e9\\ud83d\\ude00\", \"b\": 1.5e2}", j) &&
+        j.str("a") == "\xC3\xA9\xF0\x9F\x98\x80" && j.integer("b") == 150);
+  for (const char* bad : {"", "{", "{\"a\":1,}", "[1 2]", "{\"a\":01x}", "\"x\x01\"", "nul", "{} {}",
+                          "\"\\ud800\"", "1e999"})
+    CHECK(!Json::parse(bad, j, &err));
+  CHECK(!Json::parse(std::string(100, '[') + std::string(100, ']'), j, &err));  // too deep
+}
+
+TEST("dicom: reads back what it writes") {
+  Frame f = pattern(30, 20, 12);
+  f.dpiX = 1000;
+  f.dpiY = 500;
+  PatientInfo p{"ID1", "Roe", "Ann", "19800102", "F", ""};
+  DicomStudy st;
+  st.studyUid = makeUid();
+  st.seriesUid = makeUid();
+  DicomImage di;
+  di.sopUid = makeUid();
+  di.anatomicRegion = parseCodes("T-11170^SRT^Maxilla");  // a sequence to step over
+  di.primaryStructures = parseCodes("18^ISO3950^18;17^ISO3950^17");
+  const auto bytes = encodeDicom(f, p, st, di);
+  Frame back;
+  std::string err;
+  CHECK(decodeDicom(bytes.data(), bytes.size(), back, &err));
+  CHECK(back.width == 30 && back.height == 20 && back.bitsStored == 12 && back.pixels == f.pixels);
+  CHECK(std::abs(back.dpiX - 1000) < 1 && std::abs(back.dpiY - 500) < 1);
+  CHECK(!decodeDicom(bytes.data(), bytes.size() - 100, back, &err));  // truncated pixel data
+  CHECK(!decodeDicom(bytes.data(), 100, back, &err));
+  std::vector<uint8_t> noMagic = bytes;
+  noMagic[128] = 'X';
+  CHECK(!decodeDicom(noMagic.data(), noMagic.size(), back, &err));
+}
+
+TEST("manifest: round trip; files outside the folder refused") {
+  MountManifest m;
+  m.software = "twain-acquire";
+  m.session = "S1";
+  m.exported = localIsoTime(fs::nowUnixMs());
+  m.patient = PatientInfo{"ID7", "Roe", "Ann", "", "", ""};
+  m.layout = builtinLayouts()[2];  // bitewings-4
+  ManifestImage a, b, c;
+  a.file = "a.tif";
+  a.seq = 1;
+  a.slot = 0;
+  a.orientation = {1, true};
+  a.orientationApplied = true;
+  b.file = "b.tif";
+  b.seq = 2;
+  b.slot = 2;
+  c.file = "c.tif";
+  c.seq = 3;
+  m.images = {a, b, c};
+  const std::string text = encodeManifest(m);
+  CHECK(text.find("\"key\": \"r-bw1\"") != std::string::npos && text.find("\"key\": \"l-bw2\"") != std::string::npos);
+  CHECK(m.exported.size() == 19 && m.exported[10] == 'T');
+  MountManifest back;
+  std::string err;
+  CHECK(decodeManifest(text, back, &err));
+  CHECK(back.layout.slotList.size() == 4 && back.layout.slotKey(3) == "l-bw1" && back.patient.id == "ID7");
+  CHECK(back.images.size() == 3 && back.images[0].slot == 0 && back.images[0].orientation == (Orientation{1, true}) &&
+        back.images[0].orientationApplied && back.images[1].slot == 2 && back.images[2].slot == -1);
+
+  auto withFile = [&](const std::string& name) {
+    MountManifest bad = m;
+    bad.images[0].file = name;
+    return encodeManifest(bad);
+  };
+  for (const char* name : {"../a.tif", "sub/a.tif", "C:\\a.tif", "..", ""}) CHECK(!decodeManifest(withFile(name), back, &err));
+  CHECK(!decodeManifest("{\"format\":\"other\"}", back, &err));
+  std::string newer = text;
+  newer.replace(newer.find("\"version\": 1"), 12, "\"version\": 99");
+  CHECK(!decodeManifest(newer, back, &err));
+  // Two images claiming one slot: the second is shown as not placed.
+  MountManifest twice = m;
+  twice.images[1].slot = 0;
+  CHECK(decodeManifest(encodeManifest(twice), back, &err) && back.images[0].slot == 0 && back.images[1].slot == -1);
+}
+
+TEST("export: mount file written after its images, and reads back") {
+  const fs::Path root = tempDir("manifest");
+  const fs::Path out = root / "out";
+  std::string err;
+  auto s = StagingSession::create(root, "bitewings-4", "Sim", PatientInfo{"ID9", "Roe", "Ann", "", "", ""}, &err);
+  uint32_t a = 0, b = 0, c = 0;
+  s->addImage(pattern(40, 30), 0, &a);
+  s->addImage(pattern(30, 40), 2, &b);
+  s->addImage(pattern(20, 20), -1, &c);
+  s->setOrientation(a, {1, false});
+
+  ExportTarget t;
+  t.id = "desk";
+  t.format = ExportTarget::Format::Tiff16;
+  t.folder = out;
+  t.fileNamePattern = "{patient-id}_{seq}";
+  t.writeManifest = true;
+  t.subfolderPattern = "{patient-id} {family}";
+  const fs::Path folder = out / "ID9 Roe";
+  auto lookup = [&](const std::string&, ExportTarget& x) {
+    x = t;
+    return true;
+  };
+  // The folder cannot be made yet, so the images fail; the mount file must wait, not try.
+  std::filesystem::create_directories(out);
+  { std::ofstream(folder) << "blocker"; }
+  auto qp = std::make_shared<ExportQueue>(root, lookup);
+  qp->maxAttempts = 1;
+  CHECK(qp->enqueueSession(s->dir(), s->state(), builtinLayouts()[2], {t}, &err) == 4);
+  qp->start();
+  for (int i = 0; i < 300 && qp->counts().failed < 3; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  const auto held = qp->snapshot();
+  CHECK(qp->counts().failed == 3 && qp->counts().pending == 1);
+  for (const auto& j : held)
+    if (j.kind == ExportJob::Kind::Manifest) CHECK(j.attempts == 0 && j.state == ExportJob::State::Pending);
+
+  std::filesystem::remove(folder);
+  qp->retryFailed();
+  for (int i = 0; i < 300 && qp->counts().doneSinceStart < 4; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  qp->stop();
+  CHECK(qp->counts().doneSinceStart == 4);
+
+  const auto found = listManifests(folder);
+  CHECK(found.size() == 1);
+  MountManifest m;
+  CHECK(!found.empty() && readManifest(found[0], m, &err));
+  CHECK(m.layout.id == "bitewings-4" && m.patient.familyName == "Roe" && m.images.size() == 3);
+  CHECK(listImageFiles(folder).size() == 3);
+  int placed = 0;
+  for (const auto& img : m.images) {
+    Frame f;
+    CHECK(readImageFile(folder / fs::fromUtf8(img.file), f, &err));
+    CHECK(img.orientationApplied);
+    if (img.seq == a) {
+      CHECK(img.slot == 0 && m.layout.slotKey(img.slot) == "r-bw1");
+      CHECK(f.width == 30 && f.height == 40);  // turned a quarter, baked in
+      ++placed;
+    } else if (img.seq == b) {
+      CHECK(img.slot == 2 && m.layout.slotKey(img.slot) == "l-bw2");
+      ++placed;
+    } else {
+      CHECK(img.slot == -1);
+    }
+  }
+  CHECK(placed == 2);
+  std::filesystem::remove_all(root);
+}
 
 int main() { return check::runAll(); }

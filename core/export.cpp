@@ -11,6 +11,7 @@
 #include <system_error>
 
 #include "dicom.hpp"
+#include "manifest.hpp"
 #include "render.hpp"
 #include "tiff.hpp"
 
@@ -111,6 +112,8 @@ Kv ExportTarget::toKv() const {
   kv.setBool("apply-orientation", applyOrientation);
   kv.setBool("scale-to-full-range", scaleToFullRange);
   kv.setBool("window-8bit", windowFor8Bit);
+  kv.setBool("manifest", writeManifest);
+  kv.set("subfolder", subfolderPattern);
   kv.set("dicom.uid-root", uidRoot);
   kv.set("dicom.institution", institution);
   kv.set("dicom.manufacturer", manufacturer);
@@ -132,6 +135,8 @@ ExportTarget ExportTarget::fromKv(const Kv& kv) {
   t.applyOrientation = kv.boolean("apply-orientation", true);
   t.scaleToFullRange = kv.boolean("scale-to-full-range", false);
   t.windowFor8Bit = kv.boolean("window-8bit", false);
+  t.writeManifest = kv.boolean("manifest", false);
+  t.subfolderPattern = kv.str("subfolder");
   t.uidRoot = kv.str("dicom.uid-root");
   t.institution = kv.str("dicom.institution");
   t.manufacturer = kv.str("dicom.manufacturer");
@@ -146,6 +151,7 @@ Kv ExportJob::toKv() const {
   Kv kv;
   kv.set("id", id);
   kv.set("state", stateName(state));
+  if (kind == Kind::Manifest) kv.set("kind", "manifest");
   kv.set("target", targetId);
   kv.set("session.dir", fs::toUtf8(sessionDir));
   kv.setInt("seq", seq);
@@ -162,6 +168,7 @@ ExportJob ExportJob::fromKv(const Kv& kv) {
   j.id = kv.str("id");
   const std::string st = kv.str("state");
   j.state = st == "done" ? State::Done : st == "failed" ? State::Failed : State::Pending;
+  j.kind = kv.str("kind") == "manifest" ? Kind::Manifest : Kind::Image;
   j.targetId = kv.str("target");
   j.sessionDir = fs::fromUtf8(kv.str("session.dir"));
   j.seq = uint32_t(kv.integer("seq"));
@@ -236,6 +243,25 @@ int ExportQueue::enqueueSession(const fs::Path& sessionDir, const SessionState& 
     if (!t.enabled) continue;
     ++series;
     const std::string seriesUid = makeUid(t.uidRoot);
+    std::string subdir;
+    if (!t.subfolderPattern.empty()) {
+      Kv ss;
+      ss.set("patient.id", session.patient.id);
+      ss.set("patient.family", session.patient.familyName);
+      ss.set("patient.given", session.patient.givenName);
+      ss.set("content.date", dicomDate(session.startedUnixMs));
+      ss.set("content.time", dicomTime(session.startedUnixMs));
+      ss.set("session.id", session.id);
+      ss.set("sop.uid", session.id);  // the fallback when the pattern expands to nothing
+      subdir = expandPattern(t.subfolderPattern, ss, 0);
+    }
+    MountManifest manifest;
+    manifest.software = "twain-acquire";
+    manifest.session = session.id;
+    manifest.source = session.source;
+    manifest.exported = localIsoTime(created);
+    manifest.patient = session.patient;
+    manifest.layout = layout;
     int instance = 0;
     for (const StagedImage* img : keep) {
       ExportJob j;
@@ -270,8 +296,36 @@ int ExportQueue::enqueueSession(const fs::Path& sessionDir, const SessionState& 
         s.set("slot.region", formatCodes(slot.region));
         s.set("slot.structures", formatCodes(slot.structures));
       }
+      s.set("out.subdir", subdir);
       j.outName = expandPattern(t.fileNamePattern, s, img->seq) + t.extension();
+
+      ManifestImage mi;
+      mi.file = j.outName;
+      mi.seq = img->seq;
+      mi.slot = img->slot >= 0 && img->slot < int(layout.slotList.size()) ? img->slot : -1;
+      mi.orientation = img->orientation;
+      mi.orientationApplied = t.applyOrientation;
+      if (img->acquiredUnixMs) mi.acquired = localIsoTime(img->acquiredUnixMs);
+      manifest.images.push_back(std::move(mi));
       made.push_back(std::move(j));
+    }
+    if (t.writeManifest) {
+      // Written once every image of this export is in the folder (see run()).
+      ExportJob m;
+      m.id = newJobId();
+      m.kind = ExportJob::Kind::Manifest;
+      m.targetId = t.id;
+      m.sessionDir = sessionDir;
+      m.snapshot.set("session.id", session.id);
+      m.snapshot.set("study.uid", studyUid);
+      m.snapshot.set("out.subdir", subdir);
+      m.snapshot.set("manifest", encodeManifest(manifest));
+      const std::string base = session.patient.id.empty()
+                                   ? session.id
+                                   : session.patient.id + "_" + dicomDate(session.startedUnixMs) + "_" +
+                                         dicomTime(session.startedUnixMs);
+      m.outName = safeFilePart(base) + kManifestSuffix;
+      made.push_back(std::move(m));
     }
   }
   if (made.empty()) {
@@ -287,10 +341,37 @@ int ExportQueue::enqueueSession(const fs::Path& sessionDir, const SessionState& 
   return int(made.size());
 }
 
+namespace {
+
+bool writeOnce(const fs::Path& folder, const std::string& name, const std::vector<uint8_t>& bytes,
+               std::string* err) {
+  std::error_code ec;
+  std::filesystem::create_directories(folder, ec);
+  const fs::Path dest = folder / fs::fromUtf8(name);
+  if (std::filesystem::exists(dest, ec)) {
+    // A retry after a crash finds its own earlier output; anything else is
+    // someone else's file and is never overwritten.
+    std::vector<uint8_t> existing;
+    if (fs::readAll(dest, existing) && existing == bytes) return true;
+    return fail(err, "a different file named " + name + " already exists in the destination");
+  }
+  return fs::atomicWrite(dest, bytes.data(), bytes.size(), err);
+}
+
+}  // namespace
+
 bool ExportQueue::perform(ExportJob& job, std::string* err) {
   ExportTarget target;
   if (!targets_ || !targets_(job.targetId, target))
     return fail(err, "export destination '" + job.targetId + "' no longer exists");
+  fs::Path folder = target.folder;
+  if (const std::string sub = job.snapshot.str("out.subdir"); !sub.empty()) folder /= fs::fromUtf8(sub);
+
+  if (job.kind == ExportJob::Kind::Manifest) {
+    const std::string text = job.snapshot.str("manifest");
+    if (text.empty()) return fail(err, "the mount file's contents are missing from the job");
+    return writeOnce(folder, job.outName, std::vector<uint8_t>(text.begin(), text.end()), err);
+  }
 
   SessionState session;
   if (!StagingSession::readState(job.sessionDir, session, err)) return false;
@@ -359,17 +440,7 @@ bool ExportQueue::perform(ExportJob& job, std::string* err) {
   }
 
   if (bytes.empty()) return fail(err, "image is too large for this export format");
-  std::error_code ec;
-  std::filesystem::create_directories(target.folder, ec);
-  const fs::Path dest = target.folder / fs::fromUtf8(job.outName);
-  if (std::filesystem::exists(dest, ec)) {
-    // A retry after a crash finds its own earlier output; anything else is
-    // someone else's file and is never overwritten.
-    std::vector<uint8_t> existing;
-    if (fs::readAll(dest, existing) && existing == bytes) return true;
-    return fail(err, "a different file named " + job.outName + " already exists in the destination");
-  }
-  return fs::atomicWrite(dest, bytes.data(), bytes.size(), err);
+  return writeOnce(folder, job.outName, bytes, err);
 }
 
 void ExportQueue::start() {
@@ -491,6 +562,16 @@ int ExportQueue::purgeNow() {
   return removed;
 }
 
+// A mount file is written only after every image it lists: those jobs leave
+// jobs_ when done, so any still here (waiting or failed) holds it back.
+bool ExportQueue::waitsForImages(const ExportJob& manifest) const {
+  const std::string study = manifest.snapshot.str("study.uid");
+  for (const auto& [id, j] : jobs_)
+    if (j.kind == ExportJob::Kind::Image && j.targetId == manifest.targetId && j.snapshot.str("study.uid") == study)
+      return true;
+  return false;
+}
+
 void ExportQueue::run() {
   std::unique_lock<std::mutex> lock(mu_);
   while (!stopping_) {
@@ -506,6 +587,7 @@ void ExportQueue::run() {
     int64_t wake = now + 60000;
     for (auto& [id, j] : jobs_) {
       if (j.state != ExportJob::State::Pending) continue;
+      if (j.kind == ExportJob::Kind::Manifest && waitsForImages(j)) continue;
       if (j.nextTryUnixMs <= now) {
         due = &j;
         break;

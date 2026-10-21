@@ -180,6 +180,13 @@ TargetDialog::TargetDialog(const ta::ExportTarget& t, QWidget* parent) : QDialog
   folderRow->addWidget(browse);
   pattern_ = new QLineEdit(QString::fromStdString(t.fileNamePattern));
   pattern_->setToolTip(tr("Tokens: {patient-id} {family} {given} {date} {time} {seq} {slot} {session} {uid}"));
+  subfolder_ = new QLineEdit(QString::fromStdString(t.subfolderPattern));
+  subfolder_->setPlaceholderText(tr("empty = straight into the folder"));
+  subfolder_->setToolTip(tr("A folder per session, e.g. {patient-id} {family} {date}. "
+                            "{date} and {time} are when the session started."));
+  manifest_ = check(tr("Write a mount file (.mount.json) so the images can be opened again here"), t.writeManifest);
+  manifest_->setToolTip(tr("Leave this off for a folder that practice software imports from: "
+                           "it may not expect the extra file."));
   orient_ = check(tr("Apply rotation and mirroring to the pixels"), t.applyOrientation);
   scale_ = check(tr("16-bit TIFF: stretch to the full 16-bit range"), t.scaleToFullRange);
   window8_ = check(tr("8-bit TIFF: apply the automatic display window (as on screen)"), t.windowFor8Bit);
@@ -198,7 +205,9 @@ TargetDialog::TargetDialog(const ta::ExportTarget& t, QWidget* parent) : QDialog
   f->addRow(enabled_);
   f->addRow(tr("Format"), format_);
   f->addRow(tr("Folder"), folderRow);
+  f->addRow(tr("Folder per session"), subfolder_);
   f->addRow(tr("File name"), pattern_);
+  f->addRow(manifest_);
   f->addRow(orient_);
   f->addRow(scale_);
   f->addRow(window8_);
@@ -237,6 +246,8 @@ ta::ExportTarget TargetDialog::target() const {
   t.format = ta::ExportTarget::Format(format_->currentData().toInt());
   t.folder = ta::fs::fromUtf8(folder_->text().trimmed().toStdString());
   t.fileNamePattern = pattern_->text().trimmed().toStdString();
+  t.subfolderPattern = subfolder_->text().trimmed().toStdString();
+  t.writeManifest = manifest_->isChecked();
   t.applyOrientation = orient_->isChecked();
   t.scaleToFullRange = scale_->isChecked();
   t.windowFor8Bit = window8_->isChecked();

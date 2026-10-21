@@ -101,10 +101,12 @@ class MainWindow : public QMainWindow {
 
   // export
   void exportSession();
+  void openExported();
   void confirmExport(bool ok, const ta::SessionState& disk, const QString& readError, const ta::PatientInfo& p,
                      const std::vector<ta::ExportTarget>& enabled, const ta::fs::Path& dir);
   void onStagingFailed(int count, const QString& reason);
   void editTargets();
+  QString lastViewedFolder_;
   void refreshExportStatus();
   static bool readTarget(const ta::fs::Path& dir, const std::string& id, ta::ExportTarget& out);
 

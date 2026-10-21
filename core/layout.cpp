@@ -22,9 +22,10 @@ std::vector<std::string> split(const std::string& s, char sep) {
   return out;
 }
 
-LayoutSlot slot(const char* label, int col, int row, int turns = 0) {
+LayoutSlot slot(const char* label, const std::string& key, int col, int row, int turns = 0) {
   LayoutSlot s;
   s.label = label;
+  s.key = key;
   s.column = col;
   s.row = row;
   s.orientation.quarterTurns = turns;
@@ -69,6 +70,12 @@ std::pair<int, int> Layout::assignFrame(int target, std::vector<bool> occupied, 
   return {target, nextEmpty(target, occupied)};
 }
 
+std::string Layout::slotKey(int slot) const {
+  if (slot >= 0 && slot < int(slotList.size()) && !slotList[size_t(slot)].key.empty())
+    return slotList[size_t(slot)].key;
+  return "slot-" + std::to_string(slot + 1);
+}
+
 Kv Layout::toKv() const {
   Kv kv;
   kv.set("id", id);
@@ -81,6 +88,7 @@ Kv Layout::toKv() const {
     const std::string key = "slot." + std::to_string(i + 1);
     kv.set(key, s.label + "|" + std::to_string(s.column) + "|" + std::to_string(s.row) + "|" +
                     std::to_string(s.orientation.quarterTurns) + "|" + (s.orientation.flipH ? "1" : "0"));
+    if (!s.key.empty()) kv.set(key + ".key", s.key);
     if (!s.region.empty()) kv.set(key + ".region", formatCodes(s.region));
     if (!s.structures.empty()) kv.set(key + ".structures", formatCodes(s.structures));
   }
@@ -109,6 +117,7 @@ bool Layout::fromKv(const Kv& kv, Layout& out, std::string* err) {
     s.row = std::clamp(std::atoi(parts[2].c_str()), 0, out.rows - 1);
     if (parts.size() > 3) s.orientation.quarterTurns = ((std::atoi(parts[3].c_str()) % 4) + 4) % 4;
     if (parts.size() > 4) s.orientation.flipH = parts[4] == "1";
+    s.key = kv.str(key + ".key");
     s.region = parseCodes(kv.str(key + ".region"));
     s.structures = parseCodes(kv.str(key + ".structures"));
     out.slotList.push_back(std::move(s));
@@ -121,45 +130,67 @@ bool Layout::fromKv(const Kv& kv, Layout& out, std::string* err) {
 }
 
 std::vector<Layout> builtinLayouts() {
+  // Keys: r/l = patient's right/left, u/l prefix = upper/lower jaw; bitewings
+  // and periapicals counted from the back of the mouth on each side.
   std::vector<Layout> out;
 
-  Layout single{"single", "Single image", 1, 1, {slot("Image", 0, 0)}};
+  Layout single{"single", "Single image", 1, 1, {slot("Image", "image", 0, 0)}};
   out.push_back(single);
 
   Layout bw2{"bitewings-2", "Bitewings (2)", 2, 1,
-             {slot("Right bitewing", 0, 0), slot("Left bitewing", 1, 0)}};
+             {slot("Right bitewing", "r-bw1", 0, 0), slot("Left bitewing", "l-bw1", 1, 0)}};
   out.push_back(bw2);
 
   Layout bw4{"bitewings-4", "Bitewings (4)", 4, 1,
-             {slot("Right molar bitewing", 0, 0), slot("Right premolar bitewing", 1, 0),
-              slot("Left premolar bitewing", 2, 0), slot("Left molar bitewing", 3, 0)}};
+             {slot("Right molar bitewing", "r-bw1", 0, 0), slot("Right premolar bitewing", "r-bw2", 1, 0),
+              slot("Left premolar bitewing", "l-bw2", 2, 0), slot("Left molar bitewing", "l-bw1", 3, 0)}};
   out.push_back(bw4);
 
   Layout fmx{"fmx-18", "Full mouth series (18)", 7, 3, {}};
   const char* upper[] = {"Upper right molars", "Upper right premolars", "Upper right canine",
                          "Upper incisors",     "Upper left canine",     "Upper left premolars",
                          "Upper left molars"};
+  const char* upperKey[] = {"ur-pa-molar", "ur-pa-premolar", "ur-pa-canine", "u-pa-incisor",
+                            "ul-pa-canine", "ul-pa-premolar", "ul-pa-molar"};
   const char* bite[] = {"Right molar bitewing", "Right premolar bitewing", "Left premolar bitewing",
                         "Left molar bitewing"};
+  const char* biteKey[] = {"r-bw1", "r-bw2", "l-bw2", "l-bw1"};
   const int biteCols[] = {0, 1, 5, 6};
   const char* lower[] = {"Lower right molars", "Lower right premolars", "Lower right canine",
                          "Lower incisors",     "Lower left canine",     "Lower left premolars",
                          "Lower left molars"};
-  for (int i = 0; i < 7; ++i) fmx.slotList.push_back(slot(upper[i], i, 0));
-  for (int i = 0; i < 4; ++i) fmx.slotList.push_back(slot(bite[i], biteCols[i], 1));
-  for (int i = 0; i < 7; ++i) fmx.slotList.push_back(slot(lower[i], i, 2));
+  const char* lowerKey[] = {"lr-pa-molar", "lr-pa-premolar", "lr-pa-canine", "l-pa-incisor",
+                            "ll-pa-canine", "ll-pa-premolar", "ll-pa-molar"};
+  for (int i = 0; i < 7; ++i) fmx.slotList.push_back(slot(upper[i], upperKey[i], i, 0));
+  for (int i = 0; i < 4; ++i) fmx.slotList.push_back(slot(bite[i], biteKey[i], biteCols[i], 1));
+  for (int i = 0; i < 7; ++i) fmx.slotList.push_back(slot(lower[i], lowerKey[i], i, 2));
   out.push_back(fmx);
 
   // Mixed sets. Bitewings and periapicals are numbered, not named, so the
   // operator decides which teeth each one covers.
+  auto numbered = [](const char* kind, const char* key, int i) {
+    return std::make_pair(std::string(kind) + " " + std::to_string(i + 1), std::string(key) + std::to_string(i + 1));
+  };
   Layout bw4pa2{"bw4-pa2", "4 bitewings + 2 periapicals", 4, 2, {}};
-  for (int i = 0; i < 4; ++i) bw4pa2.slotList.push_back(slot(("Bitewing " + std::to_string(i + 1)).c_str(), i, 0));
-  for (int i = 0; i < 2; ++i) bw4pa2.slotList.push_back(slot(("Periapical " + std::to_string(i + 1)).c_str(), i + 1, 1));
+  for (int i = 0; i < 4; ++i) {
+    const auto [label, key] = numbered("Bitewing", "bw", i);
+    bw4pa2.slotList.push_back(slot(label.c_str(), key, i, 0));
+  }
+  for (int i = 0; i < 2; ++i) {
+    const auto [label, key] = numbered("Periapical", "pa", i);
+    bw4pa2.slotList.push_back(slot(label.c_str(), key, i + 1, 1));
+  }
   out.push_back(bw4pa2);
 
   Layout pa4bw2{"pa4-bw2", "4 periapicals + 2 bitewings", 4, 2, {}};
-  for (int i = 0; i < 4; ++i) pa4bw2.slotList.push_back(slot(("Periapical " + std::to_string(i + 1)).c_str(), i, 0));
-  for (int i = 0; i < 2; ++i) pa4bw2.slotList.push_back(slot(("Bitewing " + std::to_string(i + 1)).c_str(), i + 1, 1));
+  for (int i = 0; i < 4; ++i) {
+    const auto [label, key] = numbered("Periapical", "pa", i);
+    pa4bw2.slotList.push_back(slot(label.c_str(), key, i, 0));
+  }
+  for (int i = 0; i < 2; ++i) {
+    const auto [label, key] = numbered("Bitewing", "bw", i);
+    pa4bw2.slotList.push_back(slot(label.c_str(), key, i + 1, 1));
+  }
   out.push_back(pa4bw2);
 
   return out;

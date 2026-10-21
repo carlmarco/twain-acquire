@@ -34,6 +34,13 @@ struct ExportTarget {
   bool applyOrientation = true;  // bake rotation/mirroring into the pixels
   bool scaleToFullRange = false; // 16-bit TIFF: stretch bitsStored to the full 16 bits
   bool windowFor8Bit = false;    // 8-bit TIFF: apply the automatic display window, as on screen
+  // A mount file (<name>.mount.json) beside the images, so the session can be
+  // opened again in this program. Off by default: practice software watching
+  // the folder may not expect it.
+  bool writeManifest = false;
+  // A folder per session inside `folder`, from the same tokens as the file
+  // name ({date} and {time} are when the session started). Empty = none.
+  std::string subfolderPattern;
 
   // DICOM
   std::string uidRoot;           // empty = UUID-derived 2.25 UIDs
@@ -53,8 +60,10 @@ const char* formatName(ExportTarget::Format f);
 
 struct ExportJob {
   enum class State { Pending, Done, Failed };
+  enum class Kind { Image, Manifest };
 
   std::string id;
+  Kind kind = Kind::Image;
   State state = State::Pending;
   std::string targetId;
   fs::Path sessionDir;
@@ -64,6 +73,7 @@ struct ExportJob {
   int64_t nextTryUnixMs = 0;
   std::string lastError;
   Kv snapshot;  // patient, study, slot and orientation as confirmed by the operator
+               // (a manifest job carries the mount file's text instead)
 
   Kv toKv() const;
   static ExportJob fromKv(const Kv& kv);
@@ -126,6 +136,7 @@ class ExportQueue : public std::enable_shared_from_this<ExportQueue> {
 
  private:
   void run();
+  bool waitsForImages(const ExportJob& manifest) const;
   bool persist(const ExportJob& job, std::string* err);
   void loadAll();
 

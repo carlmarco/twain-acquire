@@ -22,7 +22,6 @@ class Stager : public QObject {
  public:
   explicit Stager(QString root, QObject* parent = nullptr);
 
-  static constexpr int kThumbSize = 384;
 
  public slots:
   void startSession(QString layout, QString source, ta::PatientInfo patient);

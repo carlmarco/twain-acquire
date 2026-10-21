@@ -45,9 +45,9 @@ class TargetDialog : public QDialog {
 
  private:
   ta::ExportTarget base_;
-  QLineEdit *name_, *folder_, *pattern_, *uidRoot_, *institution_, *manufacturer_, *model_;
+  QLineEdit *name_, *folder_, *pattern_, *subfolder_, *uidRoot_, *institution_, *manufacturer_, *model_;
   QComboBox *format_, *relationship_, *sign_;
-  QCheckBox *enabled_, *orient_, *scale_, *window_, *window8_;
+  QCheckBox *enabled_, *orient_, *scale_, *window_, *window8_, *manifest_;
 };
 
 // The list of export destinations.

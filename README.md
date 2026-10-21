@@ -88,6 +88,36 @@ each slot, and can mirror the whole mount. The changes are saved as a
 `.layout` file in the data folder, which replaces the built-in mount of the
 same id; Restore defaults removes it.
 
+## Opening exported images again
+
+An export destination can also write a mount file (`<name>.mount.json`) next to
+the images, and can put each session in its own folder (Setup > Export
+destinations: "Folder per session" and "Write a mount file"). Session > Open
+exported images then shows such a folder as it was mounted, for when the images
+could not be imported into the imaging software. The viewer is read-only:
+turning an image there changes only how it is shown. A folder without a mount
+file opens with its DICOM and TIFF images in name order.
+
+The mount file lists the layout and, for each image, its file, the slot it was
+placed in (1-based; `null` when not placed), the slot's key and label, and its
+rotation:
+
+```json
+{ "file": "ID9_20261021_111355_0001.tif", "seq": 1, "slot": 1,
+  "key": "r-bw1", "label": "Right molar bitewing",
+  "quarter-turns": 1, "mirrored": false, "orientation-applied": true }
+```
+
+Slot keys name the side and count from the back of the mouth: in the four
+bitewing mount, `r-bw1` and `l-bw1` are the molar bitewings and `r-bw2` and
+`l-bw2` the premolar ones. A `.layout` file can set its own keys with
+`slot.<n>.key`.
+
+The mount file holds the patient's name and ID, as the DICOM files do. Leave it
+off for a folder that practice software imports from: the software may not
+expect the extra file. The viewer opens DICOM and TIFF files written by
+twain-acquire; it is not a general DICOM viewer.
+
 ## Settings
 
 Settings, export destinations, source profiles and layouts are plain text files

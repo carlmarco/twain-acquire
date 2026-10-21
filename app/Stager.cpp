@@ -4,6 +4,8 @@
 
 #include "Stager.hpp"
 
+#include "Thumbnail.hpp"
+
 #include <algorithm>
 #include <vector>
 
@@ -56,14 +58,7 @@ void Stager::resumeSession(QString dir) {
 }
 
 void Stager::makeThumbnail(uint seq, const ta::Frame& f, const ta::Orientation& o) {
-  const ta::OrientMap m = ta::orientMap(f.width, f.height, o);
-  const double scale = std::min(double(kThumbSize) / m.width, double(kThumbSize) / m.height);
-  const int w = std::max(1, int(m.width * scale)), h = std::max(1, int(m.height * scale));
-  std::vector<uint8_t> lut;
-  ta::buildLut(ta::autoWindow(f), f.bitsStored, 1.0, false, lut);
-  QImage img(w, h, QImage::Format_Grayscale8);
-  ta::renderGray8(f, o, lut, 0, 0, m.width, m.height, img.bits(), w, h, int(img.bytesPerLine()));
-  emit thumbnailReady(seq, img);
+  emit thumbnailReady(seq, renderThumbnail(f, o));
 }
 
 void Stager::addFrame(QByteArray payload, ta::NormalizeOptions options, ta::Orientation orientation, int slot) {

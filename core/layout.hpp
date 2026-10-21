@@ -16,6 +16,7 @@ namespace ta {
 
 struct LayoutSlot {
   std::string label;
+  std::string key;  // short stable name, e.g. "r-bw1"; empty = "slot-<n>"
   int column = 0;
   int row = 0;
   Orientation orientation;              // turn applied to images placed here
@@ -40,6 +41,8 @@ struct Layout {
   // earlier frame still being saved), or -1 when the mount is full. Returns
   // {slot for this frame, next target}.
   std::pair<int, int> assignFrame(int target, std::vector<bool> occupied, bool autoAdvance) const;
+  // The slot's key, or "slot-<n>" (1-based) when it has none.
+  std::string slotKey(int slot) const;
   // Column a slot is drawn in, after mirroring.
   int displayColumn(const LayoutSlot& s) const { return mirrored ? columns - 1 - s.column : s.column; }
 
