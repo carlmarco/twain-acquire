@@ -86,7 +86,7 @@ SourceProfile SourceProfile::fromKv(const Kv& kv) {
   p.transfer = parseTransfer(kv.str("transfer", "auto"));
   const int64_t bd = kv.integer("bit-depth", 0);
   p.bitDepth = (bd == 8 || bd == 16) ? int(bd) : 0;
-  p.showUI = kv.boolean("show-ui", false);
+  p.showUI = kv.boolean("show-ui", true);
   p.modalUI = kv.boolean("modal-ui", false);
   p.transferCount = int(kv.integer("transfer-count", -1));
   const std::string ab = kv.str("after-batch", kv.boolean("disarm-after-each-image", false) ? "disarm" : "rearm");

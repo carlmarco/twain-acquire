@@ -710,6 +710,13 @@ void MainWindow::onHelperState(const QString& state, const QString& reason) {
     onBatchEnd();
     return;
   }
+  if (state == "armed" && reason == "source-window" && !profile_.showUI) {
+    // The source would only arm with its own window; keep it on for this source.
+    profile_.showUI = true;
+    std::string err;
+    if (!profile_.save(profilesDir_, &err)) log("warn", tr("Could not save source settings: %1").arg(q(err)));
+    log("warn", tr("The source needs its own window to arm; \"Show the source's own window\" is now on for it"));
+  }
   if (state == "open" && rearmAfterDisarm_) {
     rearmAfterDisarm_ = false;
     updateBanner();

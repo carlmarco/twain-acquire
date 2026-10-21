@@ -591,6 +591,11 @@ TEST("layout and profile: files round-trip; next empty slot wraps") {
   CHECK(q.normalize.polarity == NormalizeOptions::Polarity::MinIsWhite && q.normalize.bitsStored == 14);
   CHECK(q.defaultOrientation == (Orientation{2, true}));
   CHECK(SourceProfile::pathFor(dir, p.source).filename() == "Vendor_X___Model_1.profile");
+  // The source's own window is on unless a profile turns it off.
+  CHECK(SourceProfile{}.showUI && SourceProfile::fromKv(Kv{}).showUI);
+  Kv off;
+  off.setBool("show-ui", false);
+  CHECK(!SourceProfile::fromKv(off).showUI);
   std::filesystem::remove_all(dir);
 }
 

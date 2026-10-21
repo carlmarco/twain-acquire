@@ -22,7 +22,7 @@ struct SourceProfile {
   // Negotiation
   enum class Transfer { Auto, Memory, File, Native } transfer = Transfer::Auto;
   int bitDepth = 0;      // 0 = keep the source's default; 8 or 16 = request it
-  bool showUI = false;   // let the source show its own window
+  bool showUI = true;    // let the source show its own window; some refuse to arm without it
   bool modalUI = false;
   int transferCount = -1;  // CAP_XFERCOUNT; -1 = as many as the source offers
   // When the source has delivered a batch and waits, still enabled:

@@ -41,6 +41,7 @@ typedef struct {
   /* negotiated */
   TW_UINT16 mech;
   int show_ui, modal_ui;
+  TW_UINT16 last_refusal; /* condition of the last refused capability */
   char temp_file[MAX_PATH];
   wchar_t dsm_override[MAX_PATH]; /* from --dsm; empty = system DSM */
   uint32_t index;
@@ -105,7 +106,17 @@ static int cap_set(TW_UINT16 cap, TW_UINT16 type, TW_UINT32 value) {
   mem_unlock(c.hContainer);
   rc = dsm(&g.src, DG_CONTROL, DAT_CAPABILITY, MSG_SET, (TW_MEMREF)&c);
   mem_free(c.hContainer);
-  return rc == TWRC_SUCCESS || rc == TWRC_CHECKSTATUS;
+  if (rc == TWRC_SUCCESS || rc == TWRC_CHECKSTATUS) return 1;
+  /* Read the condition now: it belongs to this refusal, and left unread it
+   * would be reported later as the cause of an unrelated failure. */
+  g.last_refusal = condition(&g.src);
+  return 0;
+}
+
+static void refused(char *reply, size_t cap, size_t *len, const char *key, const char *what) {
+  char text[128];
+  snprintf(text, sizeof text, "%s (TWAIN condition %u)", what, (unsigned)g.last_refusal);
+  ta_kv_append(reply, cap, len, key, text);
 }
 
 /* Current value of a capability holding a 16-bit item. Returns 1 on success. */
@@ -398,7 +409,7 @@ static int tw_open(ta_backend *b, const char *kv, size_t n) {
   ta_opt_str(kv, n, "transfer", transfer, sizeof transfer, "auto");
   bit_depth = ta_opt_int(kv, n, "bit-depth", 0);
   count = ta_opt_int(kv, n, "transfer-count", -1);
-  g.show_ui = ta_opt_bool(kv, n, "show-ui", 0);
+  g.show_ui = ta_opt_bool(kv, n, "show-ui", 1);
   g.modal_ui = ta_opt_bool(kv, n, "modal-ui", 0);
   g.thread = GetCurrentThreadId();
   g.index = 0;
@@ -436,13 +447,13 @@ static int tw_open(ta_backend *b, const char *kv, size_t n) {
   /* Negotiate. A refusal is reported, not fatal: the source keeps its default. */
   ta_kv_append(reply, sizeof reply, &len, "source", name);
   if (!cap_set(ICAP_PIXELTYPE, TWTY_UINT16, TWPT_GRAY))
-    ta_kv_append(reply, sizeof reply, &len, "note.pixel-type", "source refused greyscale");
+    refused(reply, sizeof reply, &len, "note.pixel-type", "source refused greyscale");
   if (bit_depth == 8 || bit_depth == 16) {
     if (!cap_set(ICAP_BITDEPTH, TWTY_UINT16, (TW_UINT32)bit_depth))
-      ta_kv_append(reply, sizeof reply, &len, "note.bit-depth", "source refused the requested bit depth");
+      refused(reply, sizeof reply, &len, "note.bit-depth", "source refused the requested bit depth");
   }
   if (!cap_set(CAP_XFERCOUNT, TWTY_INT16, (TW_UINT32)(TW_UINT16)(TW_INT16)count))
-    ta_kv_append(reply, sizeof reply, &len, "note.transfer-count", "source refused the transfer count");
+    refused(reply, sizeof reply, &len, "note.transfer-count", "source refused the transfer count");
 
   {
     const TW_UINT16 order_auto[] = {TWSX_MEMORY, TWSX_FILE, TWSX_NATIVE};
@@ -460,7 +471,7 @@ static int tw_open(ta_backend *b, const char *kv, size_t n) {
       }
     }
     if (g.mech == TWSX_FILE && !cap_set(ICAP_IMAGEFILEFORMAT, TWTY_UINT16, TWFF_TIFF))
-      ta_kv_append(reply, sizeof reply, &len, "note.file-format", "source refused TIFF file format");
+      refused(reply, sizeof reply, &len, "note.file-format", "source refused TIFF file format");
   }
 
   ta_kv_append(reply, sizeof reply, &len, "transfer",
@@ -481,12 +492,28 @@ static int tw_open(ta_backend *b, const char *kv, size_t n) {
 static int tw_enable(ta_backend *b) {
   TW_USERINTERFACE ui;
   TW_UINT16 rc;
+  const char *reason = NULL;
   (void)b;
+  /* Clear any condition left by negotiation, so a failure below reports its own. */
+  (void)condition(&g.src);
   memset(&ui, 0, sizeof ui);
   ui.ShowUI = (TW_BOOL)g.show_ui;
   ui.ModalUI = (TW_BOOL)g.modal_ui;
   ui.hParent = (TW_HANDLE)g.parent;
   rc = dsm(&g.src, DG_CONTROL, DAT_USERINTERFACE, MSG_ENABLEDS, (TW_MEMREF)&ui);
+  if (rc != TWRC_SUCCESS && rc != TWRC_CHECKSTATUS && !g.show_ui) {
+    /* Some sources cannot run without their own window and refuse the
+     * request instead of showing it. Ask once more, with the window. */
+    const TW_UINT16 cc = condition(&g.src);
+    ta_log("warn", "the source refused to arm without its own window (TWAIN condition %u); asking again with it",
+           (unsigned)cc);
+    ui.ShowUI = TRUE;
+    rc = dsm(&g.src, DG_CONTROL, DAT_USERINTERFACE, MSG_ENABLEDS, (TW_MEMREF)&ui);
+    if (rc == TWRC_SUCCESS || rc == TWRC_CHECKSTATUS) {
+      g.show_ui = 1;
+      reason = "source-window";
+    }
+  }
   if (rc == TWRC_CHECKSTATUS) {
     ta_log("warn", "the source showed its own window although it was asked not to");
   } else if (rc != TWRC_SUCCESS) {
@@ -494,7 +521,7 @@ static int tw_enable(ta_backend *b) {
     return 0;
   }
   g.enabled = 1;
-  ta_send_state(TA_STATE_ARMED, NULL);
+  ta_send_state(TA_STATE_ARMED, reason);
   return 1;
 }
 
